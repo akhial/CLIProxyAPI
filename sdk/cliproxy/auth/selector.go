@@ -41,6 +41,8 @@ type WeightedRoundRobinSelector struct {
 	mu      sync.Mutex
 	states  map[string]*smoothWeightedState
 	maxKeys int
+	// resetBoost is set by NewWeeklyResetWeightedRoundRobinSelector.
+	resetBoost *weeklyResetBoost
 }
 
 type smoothWeightedState struct {
@@ -698,8 +700,9 @@ func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model s
 		s.states[key] = state
 	}
 	weights := authWeightVector(available)
+	s.resetBoost.boostAuthWeights(weights, available)
 	state.prepare(weights)
-	picked := pickSmoothWeightedAuth(available, state.current)
+	picked := pickSmoothWeightedAuth(available, state.current, weights)
 	if picked == nil {
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available with positive weight"}
 	}
@@ -775,13 +778,16 @@ func authWeightVector(auths []*Auth) map[string]int64 {
 	return weights
 }
 
-func pickSmoothWeightedAuth(auths []*Auth, current map[string]int64) *Auth {
+func pickSmoothWeightedAuth(auths []*Auth, current map[string]int64, weights map[string]int64) *Auth {
 	var picked *Auth
 	var pickedCurrent int64
 	var totalWeight int64
 	for _, auth := range auths {
-		weight := authWeight(auth)
-		if auth == nil || weight <= 0 {
+		if auth == nil {
+			continue
+		}
+		weight := weights[auth.ID]
+		if weight <= 0 {
 			continue
 		}
 		current[auth.ID] = saturatingAddInt64(current[auth.ID], weight)
