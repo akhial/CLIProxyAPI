@@ -3,8 +3,8 @@
 #
 # Usage: fork/build-release.sh [frontend-dir]
 #   frontend-dir defaults to ../Cli-Proxy-API-Management-Center next to this repo.
-# Output: local image cli-proxy-api-akhial:<version> and
-#         $OUT_ROOT/<version>/{management.html,RELEASE.md}. See fork/PLAYBOOK.md.
+# Output: local image cli-proxy-api-akhial:<release> and
+#         $OUT_ROOT/<release>/{management.html,RELEASE.md}. See fork/PLAYBOOK.md.
 set -euo pipefail
 
 BACKEND=${BACKEND:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)}
@@ -28,8 +28,11 @@ done
 # <upstream base tag>-akhial.<fork commit>: traceable to both upstream and the fork.
 VERSION=$(git -C "$BACKEND" describe --tags --abbrev=0 main)-akhial.$(git -C "$BACKEND" rev-parse --short=8 main)
 UI_VERSION=$(git -C "$FRONTEND" describe --tags --abbrev=0 main)-akhial.$(git -C "$FRONTEND" rev-parse --short=7 main)
-IMAGE=cli-proxy-api-akhial:$VERSION
-OUT=$OUT_ROOT/$VERSION
+# One release per backend+UI pair, so a UI-only change still gets its own image tag and folder.
+# The server keeps reporting $VERSION.
+RELEASE=$VERSION-ui.$(git -C "$FRONTEND" rev-parse --short=7 main)
+IMAGE=cli-proxy-api-akhial:$RELEASE
+OUT=$OUT_ROOT/$RELEASE
 [[ ! -e $OUT ]] || die "$OUT already exists"
 
 say "backend image $IMAGE"
@@ -96,9 +99,9 @@ docker logs "$NAME" 2>&1 | grep -c 'quota history: recording' >/dev/null || die 
 echo "smoke test passed"
 
 cat >"$OUT/RELEASE.md" <<EOF
-# Release $VERSION
+# Release $RELEASE
 
-- Backend: akhial/CLIProxyAPI main @ $(git -C "$BACKEND" rev-parse --short main) -> image \`$IMAGE\` (\`${IMAGE_ID:7:12}\`)
+- Backend: akhial/CLIProxyAPI main @ $(git -C "$BACKEND" rev-parse --short main) ($VERSION) -> image \`$IMAGE\` (\`${IMAGE_ID:7:12}\`)
 - UI: akhial/Cli-Proxy-API-Management-Center main @ $(git -C "$FRONTEND" rev-parse --short main) -> \`management.html\` ($UI_VERSION, sha256 \`$UI_SHA\`)
 - Built and smoke-tested $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
