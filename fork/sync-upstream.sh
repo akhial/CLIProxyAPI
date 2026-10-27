@@ -3,7 +3,7 @@
 #
 # Usage: fork/sync-upstream.sh <repo-dir> [upstream-tag]
 #   <repo-dir>      backend (CLIProxyAPI) or frontend (Cli-Proxy-API-Management-Center) checkout
-#   [upstream-tag]  defaults to the newest tag reachable from upstream/main
+#   [upstream-tag]  defaults to the newest stable upstream GitHub release
 #
 # Leaves the result on branch sync/<tag>; main and origin are not touched.
 # Prints the push command once the checks pass. See fork/PLAYBOOK.md.
@@ -30,6 +30,16 @@ git fetch --quiet --tags upstream
 [[ $(git rev-parse main) == $(git rev-parse origin/main) ]] ||
   die "local main differs from origin/main; push or reset it first"
 
+# Default: the newest stable (non-prerelease) GitHub release of upstream, else
+# the newest tag reachable from upstream/main.
+latest_stable_release() {
+  local slug
+  slug=$(git remote get-url upstream | sed -nE 's#^(https://github\.com/|git@github\.com:)([^/]+/[^/.]+)(\.git)?$#\2#p')
+  [[ -n $slug ]] && command -v gh >/dev/null || return 0
+  gh release list --repo "$slug" --exclude-pre-releases --exclude-drafts --limit 1 \
+    --json tagName --jq '.[0].tagName // empty' 2>/dev/null || true
+}
+TAG=${TAG:-$(latest_stable_release)}
 TAG=${TAG:-$(git describe --tags --abbrev=0 upstream/main)}
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || die "unknown tag $TAG"
 OLD_BASE=$(git merge-base main upstream/main)
