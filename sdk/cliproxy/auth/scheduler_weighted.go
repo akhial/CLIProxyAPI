@@ -25,6 +25,9 @@ func (s *authScheduler) pickWeightedPoolLocked(route string, priority int, trans
 		ids = append(ids, entry.auth.ID)
 		weights = append(weights, entry.meta.weight)
 	}
+	if pinnedAuthID == "" {
+		auths, ids, weights = s.weeklyResetPoolLocked(auths, ids, weights)
+	}
 	picked, reservation := s.weightedSelector.reservePoolScoped(route, priority, transportClass, auths, weights, ids, pinnedAuthID)
 	if picked == nil {
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available with positive weight"}

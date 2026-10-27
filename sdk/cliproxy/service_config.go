@@ -77,6 +77,8 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	switch strings.ToLower(strings.TrimSpace(cfg.Routing.Strategy)) {
 	case "weighted-round-robin", "weightedroundrobin", "wrr":
 		state.strategy = "weighted-round-robin"
+	case "weekly-reset-weighted-round-robin", "weeklyresetweightedroundrobin", "weekly-reset-wrr":
+		state.strategy = "weekly-reset-weighted-round-robin"
 	case "fill-first", "fillfirst", "ff":
 		state.strategy = "fill-first"
 	}
@@ -111,11 +113,9 @@ func newRoutingSelectorWithExisting(state routingRuntimeState, existing coreauth
 	var selector coreauth.Selector
 	switch state.strategy {
 	case "weighted-round-robin":
-		if existingWeighted := coreauth.UnwrapWeightedRoundRobinSelector(existing); existingWeighted != nil {
-			selector = existingWeighted
-		} else {
-			selector = &coreauth.WeightedRoundRobinSelector{}
-		}
+		selector = coreauth.ReuseWeightedRoundRobinSelector(existing, &coreauth.WeightedRoundRobinSelector{})
+	case "weekly-reset-weighted-round-robin":
+		selector = coreauth.ReuseWeightedRoundRobinSelector(existing, coreauth.NewWeeklyResetWeightedRoundRobinSelector())
 	case "fill-first":
 		selector = &coreauth.FillFirstSelector{}
 	default:
