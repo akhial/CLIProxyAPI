@@ -117,6 +117,10 @@ func weeklyResetFromSignals(signals map[string]string, observedAt time.Time) (ti
 	if resetAt, ok := parseQuotaResetInstant(quotaSignalValue(signals, "Anthropic-Ratelimit-Unified-7d-Reset")); ok {
 		return resetAt, true
 	}
+	// Image-generation responses describe their own limit, not the plan's weekly window.
+	if strings.HasPrefix(strings.ToLower(quotaSignalValue(signals, "X-Codex-Active-Limit")), "imagegen") {
+		return time.Time{}, false
+	}
 	for _, prefix := range []string{"X-Codex-Primary-", "X-Codex-Secondary-"} {
 		minutes, ok := parseQuotaSignalFloat(quotaSignalValue(signals, prefix+"Window-Minutes"))
 		if !ok || math.Round(minutes) != weeklyQuotaWindowMinutes {
