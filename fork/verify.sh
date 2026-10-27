@@ -16,8 +16,10 @@ if [[ -f go.mod ]]; then
     unformatted=$(gofmt -l "${changed_go[@]}")
     [[ -z $unformatted ]] || { echo "gofmt needed: $unformatted" >&2; exit 1; }
   fi
-  go vet ./sdk/cliproxy/... ./internal/api/... ./internal/config/...
+  go vet ./sdk/cliproxy/... ./sdk/api/handlers/openai/ ./internal/api/... ./internal/config/...
   go test -count=1 ./sdk/cliproxy/auth/... ./internal/api/... ./internal/config/...
+  # Only the catalog tests: the package also holds a timing-sensitive upstream test.
+  go test -count=1 -run 'ModelsProviderCatalog|CodexClientModels' ./sdk/api/handlers/openai/
   # Upstream's sdk/cliproxy package has timing-sensitive tests; retry once before failing.
   go test -count=1 ./sdk/cliproxy/ || go test -count=1 ./sdk/cliproxy/
   go build -o /tmp/cpa-verify-check ./cmd/server
