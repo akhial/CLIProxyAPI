@@ -174,6 +174,12 @@ func TestParseCodexUsageHistory_Classification(t *testing.T) {
 			},
 		},
 		{
+			name: "stated durations that are not plan windows are skipped",
+			body: `{"rate_limit":{"primary_window":{"used_percent":0,"limit_window_seconds":86400,"reset_at":1761600000},` +
+				`"secondary_window":{"used_percent":0,"limit_window_seconds":0}}}`,
+			want: nil,
+		},
+		{
 			name: "missing rate limit",
 			body: `{"plan_type":"plus"}`,
 			want: nil,
@@ -275,5 +281,43 @@ func TestParseQuotaHistoryTimestamp(t *testing.T) {
 		if got := parseQuotaHistoryTimestamp(tc.raw); got != tc.want {
 			t.Errorf("parseQuotaHistoryTimestamp(%q) = %d, want %d", tc.raw, got, tc.want)
 		}
+	}
+}
+
+// Production 2026-10-27: a gpt-image-2.5 request left image-limit headers on the
+// Codex credential, and they were recorded as a 0% weekly window between 21% samples.
+func TestQuotaHistoryWindowsFromSignals_CodexImageLimitIsNotPlanQuota(t *testing.T) {
+	observedAt := time.UnixMilli(1793132609882)
+	image := map[string]string{
+		"X-Codex-Active-Limit":                  "imagegen_premium",
+		"X-Codex-Plan-Type":                     "pro",
+		"X-Codex-Primary-Used-Percent":          "0",
+		"X-Codex-Primary-Window-Minutes":        "1440",
+		"X-Codex-Primary-Reset-At":              "1793214612",
+		"X-Codex-Secondary-Used-Percent":        "0",
+		"X-Codex-Secondary-Window-Minutes":      "0",
+		"X-Codex-Secondary-Reset-After-Seconds": "0",
+	}
+	if windows, _ := quotaHistoryWindowsFromSignals("codex", image, observedAt); len(windows) != 0 {
+		t.Fatalf("image-limit headers produced windows %+v", windows)
+	}
+	delete(image, "X-Codex-Active-Limit")
+	if windows, _ := quotaHistoryWindowsFromSignals("codex", image, observedAt); len(windows) != 0 {
+		t.Fatalf("1-day and 0-minute windows produced %+v", windows)
+	}
+
+	text := map[string]string{
+		"X-Codex-Active-Limit":                  "premium",
+		"X-Codex-Primary-Used-Percent":          "21",
+		"X-Codex-Primary-Window-Minutes":        "10080",
+		"X-Codex-Primary-Reset-At":              "1793599704",
+		"X-Codex-Secondary-Used-Percent":        "0",
+		"X-Codex-Secondary-Window-Minutes":      "0",
+		"X-Codex-Secondary-Reset-After-Seconds": "0",
+	}
+	windows, _ := quotaHistoryWindowsFromSignals("codex", text, observedAt)
+	want := []quotaHistoryWindow{{ID: "seven_day", PeriodS: 604800, Used: 21, ResetAt: 1793599704000}}
+	if !reflect.DeepEqual(windows, want) {
+		t.Fatalf("text-limit windows = %+v, want %+v", windows, want)
 	}
 }
