@@ -49,6 +49,8 @@ type WeightedRoundRobinSelector struct {
 	// across transient retry exclusions and cooldowns.
 	largeStates map[string]*weightedPoolState
 	largeOrder  []string
+	// resetBoost is set by NewWeeklyResetWeightedRoundRobinSelector.
+	resetBoost *weeklyResetBoost
 }
 
 // UnwrapWeightedRoundRobinSelector extracts the underlying *WeightedRoundRobinSelector
