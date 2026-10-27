@@ -11,7 +11,7 @@ production proxy on `baghdad`.
 | Upstream | router-for-me/CLIProxyAPI | router-for-me/Cli-Proxy-API-Management-Center |
 | Checkout | `/srv/work/code/akhial/CLIProxyAPI` | `/srv/work/code/akhial/Cli-Proxy-API-Management-Center` |
 | Remotes | `origin` = fork, `upstream` = upstream | same |
-| Artifact | Docker image `cli-proxy-api-akhial:<version>` (local, not pushed) | single-file `management.html` |
+| Artifact | Docker image `cli-proxy-api-akhial:<release>` (local, not pushed) | single-file `management.html` |
 
 `main` in each fork is **an upstream release tag plus a short stack of fork
 commits**. List them with `git log --oneline upstream/main..main`.
@@ -86,16 +86,17 @@ Allow 30–60 minutes when nothing conflicts.
    ```sh
    fork/build-release.sh
    ```
-   It builds `cli-proxy-api-akhial:<upstream-tag>-akhial.<sha>` and the UI. It then
+   It builds `cli-proxy-api-akhial:<upstream-tag>-akhial.<backend sha>-ui.<UI sha>` and the UI
+   (a UI-only change is its own release; the server reports `<upstream-tag>-akhial.<backend sha>`). It then
    starts them in a throwaway container to check that the API answers, the UI is
    served, quota history works and the routing strategy is accepted. The result is
-   `/srv/work/cliproxyapi-release/<version>/` with `management.html` and
+   `/srv/work/cliproxyapi-release/<release>/` with `management.html` and
    `RELEASE.md`, which contains the exact deploy commands.
 
 5. **Deploy** (about 10 s of downtime). Run the check first:
    ```sh
-   fork/upgrade.sh --image cli-proxy-api-akhial:<version> --ui /srv/work/cliproxyapi-release/<version>/management.html --check
-   fork/upgrade.sh --image cli-proxy-api-akhial:<version> --ui /srv/work/cliproxyapi-release/<version>/management.html
+   fork/upgrade.sh --image cli-proxy-api-akhial:<release> --ui /srv/work/cliproxyapi-release/<release>/management.html --check
+   fork/upgrade.sh --image cli-proxy-api-akhial:<release> --ui /srv/work/cliproxyapi-release/<release>/management.html
    ```
    `upgrade.sh` preflights everything and backs up to
    `backups/pre-upgrade-<ts>/`. It then swaps the image and UI while the container
