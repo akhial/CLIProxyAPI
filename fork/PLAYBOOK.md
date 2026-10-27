@@ -86,7 +86,7 @@ Allow 30–60 minutes when nothing conflicts.
    ```sh
    fork/build-release.sh
    ```
-   It builds `cli-proxy-api-akhial:<upstream-tag>-akhial.<backend sha>-ui.<UI sha>` and the UI
+   It builds `cli-proxy-api-akhial:<upstream-tag>-akhial.<backend sha>.<UI sha>` and the UI
    (a UI-only change is its own release; the server reports `<upstream-tag>-akhial.<backend sha>`). It then
    starts them in a throwaway container to check that the API answers, the UI is
    served, quota history works and the routing strategy is accepted. The result is
