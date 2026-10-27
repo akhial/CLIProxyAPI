@@ -64,7 +64,7 @@ Allow 30–60 minutes when nothing conflicts.
    fork/sync-upstream.sh .            # or: fork/sync-upstream.sh . v8.0.50
    ```
    It fetches, prints the upstream files the fork also edits, rebases onto the
-   newest upstream tag on branch `sync/<tag>`, then runs `fork/verify.sh`
+   newest stable upstream release on branch `sync/<tag>`, then runs `fork/verify.sh`
    (gofmt, vet, tests, build). On success it prints the publish command:
    ```sh
    git push --force-with-lease=main:<old-sha> origin sync/<tag>:main
@@ -108,6 +108,28 @@ Allow 30–60 minutes when nothing conflicts.
 7. **Record it**: update the `Version:` paragraph in
    `/srv/work/cliproxyapi/README.md`, and prune old images (keep the running one
    and the previous one): `docker image ls cli-proxy-api-akhial`.
+
+## Automation
+
+A T3 scheduled agent task, "Weekly CLIProxyAPI fork sync & redeploy", runs this
+routine every **Monday at 03:00 UTC** (host time). For each repo it:
+
+1. Picks the newest stable upstream release.
+2. Rebases and fixes conflicts or fork-caused failures, keeping the fixes inside
+   the fork commits they belong to.
+3. Verifies, then publishes `main`.
+4. Builds and smoke-tests a release, then deploys it with `upgrade.sh`.
+
+It writes a report to a new thread on every run.
+
+**It deploys nothing when** the preflight fails, a conflict or failure can't be
+fixed without changing fork behaviour, or checks still fail. In those cases it
+pushes the work in progress to `origin` as branch `sync/<tag>` for review, and
+leaves `main` and production untouched.
+
+Pause or change it from T3's scheduled tasks. If you fix things by hand, do it on
+`main` before the next run: the task refuses to start when local `main` differs
+from `origin/main` or the tree is dirty.
 
 ## Conflict hotspots
 
