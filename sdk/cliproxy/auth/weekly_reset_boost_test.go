@@ -599,3 +599,14 @@ func TestSessionAffinitySelector_WeeklyResetBoostAppliesToNewSessions(t *testing
 		t.Fatalf("new sessions during boosted auth cooldown = %#v, want spread over b and c", counts)
 	}
 }
+
+func TestWeeklyResetFromSignals_IgnoresCodexImageLimit(t *testing.T) {
+	signals := map[string]string{
+		"X-Codex-Active-Limit":           "imagegen_premium",
+		"X-Codex-Primary-Window-Minutes": "10080",
+		"X-Codex-Primary-Reset-At":       "1793214612",
+	}
+	if resetAt, ok := weeklyResetFromSignals(signals, time.Unix(1793132609, 0)); ok {
+		t.Fatalf("image-limit headers gave a weekly reset %v", resetAt)
+	}
+}
