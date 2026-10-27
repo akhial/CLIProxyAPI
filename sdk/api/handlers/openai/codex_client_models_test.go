@@ -1,14 +1,101 @@
 package openai
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
+
+func TestOpenAIModelsProviderCatalog(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient("provider-catalog-codex", "codex", []*registry.ModelInfo{
+		{ID: "gpt-6-astra", DisplayName: "GPT 6.0 Astra"},
+		{ID: "gpt-6.1-sol", DisplayName: "GPT 6.1 Sol"},
+		{ID: "gpt-6-luna", DisplayName: "GPT 6.0 Luna"},
+		{ID: "gpt-5.6-terra", DisplayName: "GPT 5.6 Terra"},
+		{ID: "codex-future-model", DisplayName: "Future Codex Model"},
+	})
+	modelRegistry.RegisterClient("provider-catalog-claude", "claude", []*registry.ModelInfo{
+		{ID: "claude-sonnet-5-5", DisplayName: "Claude Sonnet 5.5"},
+		{ID: "gpt-looking-claude-alias", DisplayName: "Claude Alias"},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient("provider-catalog-codex")
+		modelRegistry.UnregisterClient("provider-catalog-claude")
+	})
+
+	handler := NewOpenAIAPIHandler(handlers.NewBaseAPIHandlers(&config.SDKConfig{}, nil))
+	router := gin.New()
+	router.GET("/v1/models", handler.OpenAIModels)
+	for _, tt := range []struct {
+		name      string
+		query     string
+		wantNames map[string]string
+	}{
+		{
+			name:  "default catalog remains mixed",
+			query: "?client_version=0.164.0",
+			wantNames: map[string]string{
+				"gpt-6-astra":              "GPT 6.0 Astra",
+				"gpt-6.1-sol":              "GPT 6.1 Sol",
+				"gpt-6-luna":               "GPT 6.0 Luna",
+				"gpt-5.6-terra":            "GPT 5.6 Terra",
+				"codex-future-model":       "Future Codex Model",
+				"claude-sonnet-5-5":        "Claude Sonnet 5.5",
+				"gpt-looking-claude-alias": "Claude Alias",
+			},
+		},
+		{
+			name:  "codex catalog uses marketing names and provider registrations",
+			query: "?client_version=0.164.0&provider=codex",
+			wantNames: map[string]string{
+				"gpt-6-astra":        "GPT-6 Astra",
+				"gpt-6.1-sol":        "GPT-6.1 Sol",
+				"gpt-6-luna":         "GPT-6 Luna",
+				"gpt-5.6-terra":      "GPT-5.6 Terra",
+				"codex-future-model": "Future Codex Model",
+			},
+		},
+		{
+			name:      "unknown provider has no models",
+			query:     "?client_version=0.164.0&provider=nonexistent",
+			wantNames: map[string]string{},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/models"+tt.query, nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", recorder.Code)
+			}
+			var response struct {
+				Models []struct {
+					Slug        string `json:"slug"`
+					DisplayName string `json:"display_name"`
+				} `json:"models"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if len(response.Models) != len(tt.wantNames) {
+				t.Fatalf("received %d models, want %d: %+v", len(response.Models), len(tt.wantNames), response.Models)
+			}
+			for _, model := range response.Models {
+				if name, ok := tt.wantNames[model.Slug]; !ok || model.DisplayName != name {
+					t.Errorf("model %q display_name = %q, want %q (allowed = %v)", model.Slug, model.DisplayName, name, ok)
+				}
+			}
+		})
+	}
+}
 
 func TestCodexClientModelsResponseMultiAgentV2FollowsConfig(t *testing.T) {
 	modelID := "codex-client-multi-agent-v2-test"
