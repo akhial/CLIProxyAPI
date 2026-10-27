@@ -21,12 +21,17 @@ Backend stack:
    daily JSONL store, `GET /v8/management/quota/history`.
 2. `feat(routing): add weekly-reset-weighted-round-robin strategy`: weighted
    round-robin; accounts whose weekly window resets in <36h get weight 1,000,000.
-3. `docs(fork): maintenance playbook and release scripts`: this `fork/` folder.
+3. `docs(fork): …` commits: this `fork/` folder.
+4. `feat(openai): provider-scoped Codex model catalog`: `GET /v1/models?provider=codex`
+   (Codex client format) lists only Codex-registered models under their native
+   names. Codex clients set `model_catalog_url` to that URL.
 
 UI stack:
 1. `style(shell): prox brand and neutral black dark theme`: almost all in `src/styles/fork.scss`.
 2. `feat(quota): pool forecast, account grid and weekly-reset routing option`.
 3. `docs(fork): note the fork and point to the playbook`: `FORK.md`.
+4. `feat(dashboard): fork dashboard, plain loading screen, land on dashboard`:
+   `src/features/dashboard/prox/`, `BootLoader`, `src/landOnDashboard.ts`.
 
 Production: `/srv/work/cliproxyapi` (Docker Compose, Tailscale Serve on :8317).
 Its `README.md` records the running version and the latest backup.
@@ -149,6 +154,8 @@ Backend:
 | `internal/api/server_management_v8.go` | `v8.GET("/quota/history", s.mgmt.GetQuotaHistory)`. |
 | `internal/config/config_types.go`, `config.example.yaml` | Docs for the new strategy only. |
 | `sdk/cliproxy/auth/selector_test.go` | One call site uses the new `pickSmoothWeightedAuth` signature. |
+| `sdk/api/handlers/openai/openai_handlers.go` | In `OpenAIModels`, the Codex-client branch passes the response through `filterCodexClientModelsByProvider` when `?provider=` is set. |
+| `sdk/api/handlers/openai/codex_client_models.go`, `…_test.go` | `filterCodexClientModelsByProvider` and `TestOpenAIModelsProviderCatalog`. |
 
 UI:
 
@@ -158,7 +165,10 @@ UI:
 | `src/features/quota/components/QuotaHeader.*` | "Show emails" button and the inline header style. |
 | `src/features/authFiles/components/ProviderTabs.*` | `variant="pills"`. |
 | `src/components/layout/MainLayout.tsx` | Brand block uses `ForkBrandLogo`. |
-| `src/i18n/locales/*.json` (all six) | `quota_forecast` and `quota_accounts` blocks plus two routing-strategy labels. Keep both sides of adjacent-key conflicts; the build fails on invalid JSON. |
+| `src/router/MainRoutes.tsx` | `/` and `/dashboard` render the fork's `ProxDashboardPage` (`src/features/dashboard/prox/`); upstream's `DashboardPage` is left in place, unrouted. |
+| `src/pages/LoginPage.tsx`, `src/router/ProtectedRoute.tsx` | Session restore shows `BootLoader` (a word and a bar) instead of the splash/spinner; auto-login redirects without the 1.5 s pause. |
+| `src/main.tsx` | Imports `./landOnDashboard` first, so a fresh visit opens the dashboard before the hash router reads the URL. |
+| `src/i18n/locales/*.json` (all six) | `quota_forecast`, `quota_accounts` and `prox` blocks plus two routing-strategy labels. Keep both sides of adjacent-key conflicts; the build fails on invalid JSON. |
 | `src/styles/global.scss`, `variables.scss` | `@use './fork.scss'` and `Inter` in the font stack. |
 | `src/hooks/useVisualConfig.ts`, `src/types/visualConfig.ts`, `config/…/SectionNetwork.tsx`, `dashboard/DashboardPage.tsx`, `config/searchIndex.ts` | The new strategy value. Without it, saving the config resets it to round-robin. |
 | `src/features/quota/QuotaPage.module.scss`, `src/services/api/index.ts` | Row skeleton style and the `quotaHistory` export. |
@@ -172,7 +182,10 @@ change, re-check the fork feature that depends on them:
   (`conductor_selection.go`), weight parsing (`internal/credentialweight`). Boost
   wiring could silently stop applying; `weekly_reset_boost_test.go` must still pass.
 - **Quota headers**: `quota_signals.go`, `claude_ratelimit.go`, `codex_quota.go`
-  (header names and formats feed both the collector and the boost).
+  (header names and formats feed the collector, the boost and the dashboard's account rows).
+- **Credentials list shape**: `recent_requests` (20 epoch-aligned 10-minute buckets),
+  `quota.signals`, `cooldowns` and `observed_at` in `GET /v8/management/credentials`
+  feed the UI dashboard (`src/features/dashboard/prox/model.ts`).
 - **Management plumbing** the collector reuses: `resolveTokenForAuth`,
   `apiCallTransport`, `Handler`, `Server.Start/Stop`.
 - **Provider usage APIs**: if upstream changes `CLAUDE_USAGE_URL`, `CODEX_USAGE_URL`
@@ -181,6 +194,9 @@ change, re-check the fork feature that depends on them:
 - **UI quota providers**: state shapes in `src/types/quota.ts` and
   `providers/*/data.ts` feed `accounts/rowModel.ts`. `QuotaCard.tsx` changes (new
   actions) may need the same change in `accounts/AccountRow.tsx`, which replaced it.
+- **Codex model catalog**: `codex_client_models.go`, `registry.GetCodexClientModelsJSON`
+  and `GetModelProviders`. If upstream adds its own provider filter, prefer it and
+  keep the `provider=codex` URL working for existing Codex clients.
 - **Upstream ships the same thing** (quota history, a reset-aware strategy): prefer
   upstream's version and drop or slim down the fork commit.
 
