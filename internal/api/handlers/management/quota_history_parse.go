@@ -177,7 +177,9 @@ type codexHistoryRawWindow struct {
 	used    float64
 	hasUsed bool
 	periodS int64
-	resetAt int64
+	// periodKnown is set when the payload states the window length, even as 0.
+	periodKnown bool
+	resetAt     int64
 }
 
 // parseCodexUsageHistory extracts the main rate-limit windows and the plan type
@@ -206,8 +208,11 @@ func codexHistoryRawWindowFromJSON(window gjson.Result, now time.Time) *codexHis
 	}
 	raw := &codexHistoryRawWindow{}
 	raw.used, raw.hasUsed = quotaHistoryNumber(quotaHistoryFirst(window, "used_percent", "usedPercent"))
-	if seconds, ok := quotaHistoryNumber(quotaHistoryFirst(window, "limit_window_seconds", "limitWindowSeconds")); ok && seconds > 0 {
-		raw.periodS = int64(math.Round(seconds))
+	if seconds, ok := quotaHistoryNumber(quotaHistoryFirst(window, "limit_window_seconds", "limitWindowSeconds")); ok {
+		raw.periodKnown = true
+		if seconds > 0 {
+			raw.periodS = int64(math.Round(seconds))
+		}
 	}
 	raw.resetAt = quotaHistoryResetMs(window.Get("reset_at"))
 	if raw.resetAt == 0 {
@@ -223,7 +228,9 @@ func codexHistoryRawWindowFromJSON(window gjson.Result, now time.Time) *codexHis
 
 // classifyCodexHistoryWindows maps primary/secondary windows to canonical ids by
 // their duration, falling back to primary=five_hour, secondary=weekly for
-// payloads without one, exactly like the management UI.
+// payloads that state no duration, exactly like the management UI. A stated
+// duration that is neither (a 0-minute placeholder, the 1-day image-generation
+// limit) is not a plan window.
 func classifyCodexHistoryWindows(primary, secondary *codexHistoryRawWindow, limitReached bool) []quotaHistoryWindow {
 	var fiveHour, weekly *codexHistoryRawWindow
 	for _, window := range []*codexHistoryRawWindow{primary, secondary} {
@@ -237,10 +244,10 @@ func classifyCodexHistoryWindows(primary, secondary *codexHistoryRawWindow, limi
 			weekly = window
 		}
 	}
-	if fiveHour == nil && primary != nil && primary != weekly {
+	if fiveHour == nil && primary != nil && !primary.periodKnown {
 		fiveHour = primary
 	}
-	if weekly == nil && secondary != nil && secondary != fiveHour {
+	if weekly == nil && secondary != nil && !secondary.periodKnown {
 		weekly = secondary
 	}
 
@@ -340,6 +347,11 @@ func claudeHistoryWindowsFromSignals(signals map[string]string) []quotaHistoryWi
 // headers. Used-Percent is already 0..100, Window-Minutes is the period,
 // Reset-At is Unix seconds and Reset-After-Seconds is relative to observedAt.
 func codexHistoryWindowsFromSignals(signals map[string]string, observedAt time.Time) []quotaHistoryWindow {
+	// Image-generation responses report their own limit (X-Codex-Active-Limit:
+	// imagegen_*) in the same headers; it is not the plan's quota.
+	if strings.HasPrefix(strings.ToLower(signals["x-codex-active-limit"]), "imagegen") {
+		return nil
+	}
 	primary := codexHistoryRawWindowFromSignals(signals, "x-codex-primary-", observedAt)
 	secondary := codexHistoryRawWindowFromSignals(signals, "x-codex-secondary-", observedAt)
 	limitReached := strings.EqualFold(signals["x-codex-limit-reached"], "true") ||
@@ -357,8 +369,11 @@ func codexHistoryRawWindowFromSignals(signals map[string]string, prefix string, 
 	}
 	raw := &codexHistoryRawWindow{}
 	raw.used, raw.hasUsed = quotaHistoryParseFloat(usedRaw)
-	if minutes, ok := quotaHistoryParseFloat(minutesRaw); ok && minutes > 0 {
-		raw.periodS = int64(math.Round(minutes * 60))
+	if minutes, ok := quotaHistoryParseFloat(minutesRaw); ok {
+		raw.periodKnown = true
+		if minutes > 0 {
+			raw.periodS = int64(math.Round(minutes * 60))
+		}
 	}
 	raw.resetAt = parseQuotaHistoryTimestamp(resetAtRaw)
 	if raw.resetAt == 0 && !observedAt.IsZero() {
