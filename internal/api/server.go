@@ -354,6 +354,9 @@ func (s *Server) Start() error {
 		acceptErrCh <- s.acceptMuxConnections(listener, httpListener)
 	}()
 
+	s.mgmt.StartQuotaHistory()
+	defer s.mgmt.StopQuotaHistory()
+
 	select {
 	case errServe := <-httpErrCh:
 		s.listenerMu.Lock()
