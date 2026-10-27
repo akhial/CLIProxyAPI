@@ -30,7 +30,7 @@ VERSION=$(git -C "$BACKEND" describe --tags --abbrev=0 main)-akhial.$(git -C "$B
 UI_VERSION=$(git -C "$FRONTEND" describe --tags --abbrev=0 main)-akhial.$(git -C "$FRONTEND" rev-parse --short=7 main)
 # One release per backend+UI pair, so a UI-only change still gets its own image tag and folder.
 # The server keeps reporting $VERSION.
-RELEASE=$VERSION-ui.$(git -C "$FRONTEND" rev-parse --short=7 main)
+RELEASE=$VERSION.$(git -C "$FRONTEND" rev-parse --short=7 main)
 IMAGE=cli-proxy-api-akhial:$RELEASE
 OUT=$OUT_ROOT/$RELEASE
 [[ ! -e $OUT ]] || die "$OUT already exists"
