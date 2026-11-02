@@ -28,10 +28,14 @@ Backend stack:
 
 UI stack:
 1. `style(shell): prox brand and neutral black dark theme`: almost all in `src/styles/fork.scss`.
-2. `feat(quota): pool forecast, account grid and weekly-reset routing option`.
+2. `feat(quota): pool forecast, account grid and weekly-reset routing option`:
+   also makes the Config and Routing pages know the fork strategy.
 3. `docs(fork): note the fork and point to the playbook`: `FORK.md`.
 4. `feat(dashboard): fork dashboard, plain loading screen, land on dashboard`:
-   `src/features/dashboard/prox/`, `BootLoader`, `src/landOnDashboard.ts`.
+   `src/features/dashboard/prox/`, `BootLoader`, `src/landOnDashboard.ts`, instant
+   redirect after session restore.
+5. Follow-up `fix(quota)`, `fix(dashboard)` and `feat(quota)` commits on the quota
+   page, forecast and dashboard.
 
 Production: `/srv/work/cliproxyapi` (Docker Compose, Tailscale Serve on :8317).
 Its `README.md` records the running version and the latest backup.
@@ -52,7 +56,12 @@ Its `README.md` records the running version and the latest backup.
   images. GitHub Actions are currently not enabled on either fork, so there is no
   CI: `fork/verify.sh` is the gate.
 - Follow each repo's `AGENTS.md` (backend: gofmt, no `/v0/management` changes, no
-  standalone `internal/translator/` changes; UI: all six locales, `bun run verify`).
+  standalone `internal/translator/` changes; UI: all seven locales, `bun run verify`).
+- **Never delete, skip or weaken tests**, with one exception: an upstream test that
+  only pins an artificial UI delay or animation timing (for example a minimum
+  splash time) that contradicts fork behaviour. Keep the fork's behaviour and remove
+  just that test case, together with the delay, in the fork commit that owns the
+  behaviour; say so in its commit message.
 
 ## Weekly routine
 
@@ -107,8 +116,8 @@ Allow 30–60 minutes when nothing conflicts.
    is enough; no restart is needed.
 
 6. **Check it** in the UI (hard refresh): forecast charts render, account rows
-   show "Recorded … ago", and Config → Routing Strategy reads "Weekly reset
-   weighted round-robin". Then run `docker compose logs --since 15m | grep -iE
+   show "Recorded … ago", and both Config → Routing Strategy and the Routing page
+   read "Weekly reset weighted round-robin". Then run `docker compose logs --since 15m | grep -iE
    'panic|quota poll failed'` in `/srv/work/cliproxyapi`.
 
 7. **Record it**: update the `Version:` paragraph in
@@ -131,7 +140,9 @@ It writes a report to a new thread on every run.
 **It deploys nothing when** the preflight fails, a conflict or failure can't be
 fixed without changing fork behaviour, or checks still fail. In those cases it
 pushes the work in progress to `origin` as branch `sync/<tag>` for review, and
-leaves `main` and production untouched.
+leaves `main` and production untouched. Cosmetic UI timing (artificial delays,
+splash duration, animations) is never a reason to stop: see the test rule under
+*Rules*.
 
 Pause or change it from T3's scheduled tasks. If you fix things by hand, do it on
 `main` before the next run: the task refuses to start when local `main` differs
@@ -165,14 +176,16 @@ UI:
 | `src/features/quota/QuotaPage.tsx` | Forecast section under the tabs, `useForecastPrefs`, history shared with `AccountsTable` (which replaced the card grid), plugin tab hidden when empty, masked names. |
 | `src/features/quota/components/QuotaHeader.*` | "Show emails" button and the inline header style. |
 | `src/features/authFiles/components/ProviderTabs.*` | `variant="pills"`. |
-| `src/components/layout/MainLayout.tsx` | Brand block uses `ForkBrandLogo`. |
+| `src/components/layout/MainLayout.tsx` | Brand block uses `ForkBrandLogo` (upstream's `abbrBrandName` is dropped). Keep upstream's `arrivingFromLogin` reveal wiring. |
 | `src/router/MainRoutes.tsx` | `/` and `/dashboard` render the fork's `ProxDashboardPage` (`src/features/dashboard/prox/`); upstream's `DashboardPage` is left in place, unrouted. |
-| `src/pages/LoginPage.tsx`, `src/router/ProtectedRoute.tsx` | Session restore shows `BootLoader` (a word and a bar) instead of the splash/spinner; auto-login redirects without the 1.5 s pause. |
+| `src/pages/LoginPage.tsx`, `tests/autoLoginEntry.test.ts` | Session restore renders `BootLoader` (a word and a bar) instead of upstream's splash, and navigates as soon as `restoreSession()` succeeds: no `splashMin` hold, exit fade or reveal. Upstream's "splash pacing" test case that pins the minimum splash is removed. Manual sign-in keeps upstream's success → exit → reveal hand-off and its tests (`tests/loginTransition.test.ts`). |
 | `src/main.tsx` | Imports `./landOnDashboard` first, so a fresh visit opens the dashboard before the hash router reads the URL. |
-| `src/i18n/locales/*.json` (all six) | `quota_forecast`, `quota_accounts` and `prox` blocks plus two routing-strategy labels. Keep both sides of adjacent-key conflicts; the build fails on invalid JSON. |
+| `src/i18n/locales/*.json` (all seven, including `tr`) | `quota_forecast`, `quota_accounts` and `prox` blocks plus the strategy labels (`basic_settings`, `config_management.visual.sections.network` and `routing.strategy_weekly_reset_weighted_round_robin` with `_desc`). Git often misaligns the conflict hunks in these files, so keeping both text sides can corrupt them. Merge per key instead: take upstream's file and re-apply the keys the fork commit adds or removes. `tests/turkishLocale.test.ts` requires `tr.json` to have every `en.json` key at every commit. |
 | `src/styles/global.scss`, `variables.scss` | `@use './fork.scss'` and `Inter` in the font stack. |
 | `src/hooks/useVisualConfig.ts`, `src/types/visualConfig.ts`, `config/…/SectionNetwork.tsx`, `dashboard/DashboardPage.tsx`, `config/searchIndex.ts` | The new strategy value. Without it, saving the config resets it to round-robin. |
+| `src/types/routing.ts`, `src/services/api/routing.ts`, `src/features/routing/logic.ts`, `routing/components/{PolicyPanel,MemberCard,WeightDialog}.tsx` | Routing page: `weekly-reset-weighted-round-robin` (and `weekly-reset-wrr`) is in `ROUTING_STRATEGIES` and `normalizeRoutingStrategy`, and counts as weighted through `isWeightedRoutingStrategy` (weight badges, weight dialog, traffic shares). Without it the page shows production's strategy as round-robin. `tests/routingWeeklyReset.test.ts` covers it. |
 | `src/features/quota/QuotaPage.module.scss`, `src/services/api/index.ts` | Row skeleton style and the `quotaHistory` export. |
+| `src/utils/quota/relativeTime.ts`, `tests/quotaRelativeTime.test.ts` | Days start at 48 h, so a reset 24–47 h away reads in hours and shows whether it is inside the 36 h priority window; the upstream test matches. |
 
 ## Watch list in upstream release notes
 
@@ -195,6 +208,10 @@ change, re-check the fork feature that depends on them:
 - **UI quota providers**: state shapes in `src/types/quota.ts` and
   `providers/*/data.ts` feed `accounts/rowModel.ts`. `QuotaCard.tsx` changes (new
   actions) may need the same change in `accounts/AccountRow.tsx`, which replaced it.
+- **UI routing strategy checks**: new upstream code that compares a strategy with
+  `'weighted-round-robin'` must use `isWeightedRoutingStrategy`, and new strategy
+  lists or normalizers must include `weekly-reset-weighted-round-robin`. Otherwise
+  the UI shows production's strategy as round-robin, or saves it back as one.
 - **Codex model catalog**: `codex_client_models.go`, `registry.GetCodexClientModelsJSON`
   and `GetModelProviders`. If upstream adds its own provider filter, prefer it and
   keep the `provider=codex` URL working for existing Codex clients.
