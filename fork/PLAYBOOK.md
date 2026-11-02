@@ -117,7 +117,7 @@ Allow 30–60 minutes when nothing conflicts.
 
 6. **Check it** in the UI (hard refresh): forecast charts render, account rows
    show "Recorded … ago", and both Config → Routing Strategy and the Routing page
-   read "Weekly reset weighted round-robin". Then run `docker compose logs --since 15m | grep -iE
+   read "Reset weighted round-robin". Then run `docker compose logs --since 15m | grep -iE
    'panic|quota poll failed'` in `/srv/work/cliproxyapi`.
 
 7. **Record it**: update the `Version:` paragraph in
