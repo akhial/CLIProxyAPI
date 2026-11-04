@@ -378,6 +378,10 @@ func TestWeeklyResetBoost_SessionLimitedAuthGoesFirstWithinHeadStart(t *testing.
 		{name: "limited exactly the head start later", exemptIn: 26 * time.Hour, limitedIn: 27 * time.Hour, wantBoth: true},
 		{name: "limited 70m later", exemptIn: 26 * time.Hour, limitedIn: 27*time.Hour + 10*time.Minute},
 		{name: "exempt much later", exemptIn: 35 * time.Hour, limitedIn: 12 * time.Hour, wantLimited: true},
+		// Under an hour from the reset the limited deadline lies in the past: still eligible, still first.
+		{name: "limited resets in 30m, exempt in 20m", exemptIn: 20 * time.Minute, limitedIn: 30 * time.Minute, wantLimited: true},
+		{name: "limited resets in 10m, exempt in 50m", exemptIn: 50 * time.Minute, limitedIn: 10 * time.Minute, wantLimited: true},
+		{name: "limited resets in 30m, exempt in 2h", exemptIn: 2 * time.Hour, limitedIn: 30 * time.Minute, wantLimited: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
