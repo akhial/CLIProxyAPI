@@ -78,6 +78,7 @@ type quotaHistoryCollector struct {
 	states      map[string]*quotaHistoryAuthState
 	stateLoaded bool
 	lastPrune   time.Time
+	lastStats   time.Time
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -302,6 +303,9 @@ func (c *quotaHistoryCollector) safeTick(ctx context.Context) {
 func (c *quotaHistoryCollector) tick(ctx context.Context) {
 	now := c.nowFunc()
 	c.restoreState(now)
+	if now.Sub(c.lastStats) >= quotaHistoryStatsInterval {
+		c.refreshRoutingStats(now)
+	}
 	if c.lastPrune.IsZero() || now.Sub(c.lastPrune) >= quotaHistoryPruneInterval {
 		c.lastPrune = now
 		if errPrune := c.store.Prune(now); errPrune != nil {
@@ -319,13 +323,16 @@ func (c *quotaHistoryCollector) tick(ctx context.Context) {
 	}
 }
 
-// restoreState runs loadState once and returns the number of credentials it restored.
+// restoreState runs loadState and refreshRoutingStats once and returns the number of
+// credentials restored.
 func (c *quotaHistoryCollector) restoreState(now time.Time) int {
 	if c.stateLoaded {
 		return 0
 	}
 	c.stateLoaded = true
-	return c.loadState(now)
+	restored := c.loadState(now)
+	c.refreshRoutingStats(now)
+	return restored
 }
 
 // loadState restores the last sample time and plan of each credential so a
@@ -558,26 +565,36 @@ func (c *quotaHistoryCollector) record(auth *coreauth.Auth, provider string, sta
 	}
 }
 
-// publishQuotaHistoryRoutingHints shares the weekly reset instant and whether the
-// credential has a 5-hour session limit with the weekly-reset routing strategy,
-// which cannot read quota history itself. Only samples with a weekly window speak
-// for the plan's windows.
+// publishQuotaHistoryRoutingHints shares the weekly window and the 5-hour window
+// with the weekly-reset routing strategy, which cannot read quota history itself.
+// Only samples with a weekly window speak for the plan's windows.
 func publishQuotaHistoryRoutingHints(authID string, at time.Time, windows []quotaHistoryWindow) {
-	weekly, session := false, false
-	for _, window := range windows {
-		switch window.ID {
+	var weekly, session *quotaHistoryWindow
+	for index := range windows {
+		switch windows[index].ID {
 		case quotaHistoryWindowSevenDay:
-			weekly = true
-			if window.ResetAt > 0 {
-				coreauth.SetWeeklyResetHint(authID, time.UnixMilli(window.ResetAt), at)
-			}
+			weekly = &windows[index]
 		case quotaHistoryWindowFiveHour:
-			session = true
+			session = &windows[index]
 		}
 	}
-	if weekly {
-		coreauth.SetSessionLimitHint(authID, session, at)
+	if weekly == nil {
+		return
 	}
+	if weekly.ResetAt > 0 {
+		coreauth.SetWeeklyQuotaHint(authID, coreauth.WeeklyQuota{
+			ResetAt:     time.UnixMilli(weekly.ResetAt),
+			UsedPercent: weekly.Used,
+		}, at)
+	}
+	quota := coreauth.SessionQuota{UsedPercent: -1}
+	if session != nil {
+		quota = coreauth.SessionQuota{Limited: true, UsedPercent: session.Used}
+		if session.ResetAt > 0 {
+			quota.ResetAt = time.UnixMilli(session.ResetAt)
+		}
+	}
+	coreauth.SetSessionQuotaHint(authID, quota, at)
 }
 
 func (c *quotaHistoryCollector) logEntry(auth *coreauth.Auth, provider string) *log.Entry {
