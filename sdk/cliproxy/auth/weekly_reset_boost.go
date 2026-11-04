@@ -13,15 +13,10 @@ import (
 
 const (
 	// WeeklyResetBoostWindow is how close the weekly quota reset of a credential must be
-	// for the weekly-reset weighted round-robin strategy to boost it.
+	// for the weekly-reset weighted round-robin strategy to treat it as urgent.
 	WeeklyResetBoostWindow = 36 * time.Hour
-	// WeeklyResetBoostWeight is the effective weight of a boosted credential.
+	// WeeklyResetBoostWeight is the effective weight of the most urgent credentials.
 	WeeklyResetBoostWeight = credentialweight.Max
-	// WeeklyResetSessionHeadStart is how much earlier a credential with a 5-hour session
-	// limit counts as resetting when the boost ranks credentials. It can spend only one
-	// session's worth at a time, so of two credentials resetting less than this apart,
-	// the session-limited one goes first; one without the limit is quicker to empty.
-	WeeklyResetSessionHeadStart = time.Hour
 
 	// weeklyQuotaWindowMinutes identifies the weekly Codex window by its advertised length.
 	weeklyQuotaWindowMinutes = 7 * 24 * 60
@@ -32,16 +27,37 @@ const (
 )
 
 // NewWeeklyResetWeightedRoundRobinSelector returns a weighted round-robin selector that
-// raises the most urgent credential whose weekly quota resets within
-// WeeklyResetBoostWindow to WeeklyResetBoostWeight, so quota that would expire unused at
-// the reset is spent first. The most urgent credential is the one resetting soonest, a
-// session-limited one counting WeeklyResetSessionHeadStart earlier; credentials tied on
-// that instant share the boost. Only available candidates are ranked, so when the boosted
-// credential cools down the next most urgent one takes over. Credentials with a
-// non-positive configured weight stay excluded.
+// sends each pick to the first of these tiers that has an available candidate:
+//
+//  1. the weekly quota resets within WeeklyResetBoostWindow and there is a 5-hour
+//     session limit;
+//  2. the weekly quota resets within WeeklyResetBoostWindow;
+//  3. there is a 5-hour session limit;
+//  4. there is no 5-hour session limit.
+//
+// In tiers 1 and 2 the credential whose weekly quota resets soonest takes every pick, so
+// quota that would expire unused at the reset is spent first; credentials tied on that
+// instant share evenly at WeeklyResetBoostWeight. In tiers 3 and 4 the configured weights
+// apply. Session-limited credentials go first because they can spend only one session's
+// worth at a time, while exempt ones empty faster and take the overflow. Only available
+// candidates are ranked, so when the chosen ones cool down the next tier takes over.
+// Credentials with a non-positive configured weight stay excluded.
 func NewWeeklyResetWeightedRoundRobinSelector() *WeightedRoundRobinSelector {
 	return &WeightedRoundRobinSelector{resetBoost: &weeklyResetBoost{}}
 }
+
+// routingTier orders candidates for the weekly-reset strategy; lower tiers go first.
+type routingTier int
+
+const (
+	tierUrgentSessionLimited routingTier = iota
+	tierUrgentExempt
+	tierSessionLimited
+	tierExempt
+)
+
+// urgent reports whether the tier ranks by weekly reset.
+func (t routingTier) urgent() bool { return t <= tierUrgentExempt }
 
 // weeklyResetBoost computes effective weights for the weekly-reset strategy.
 type weeklyResetBoost struct {
@@ -81,10 +97,24 @@ func (b *weeklyResetBoost) sessionRegistry() *sessionLimitHintRegistry {
 	return defaultSessionLimitHints
 }
 
-// boostDeadline returns the instant the boost ranks auth by: its weekly reset,
-// WeeklyResetSessionHeadStart earlier when auth has a 5-hour session limit. ok is false
-// unless the reset is known and within WeeklyResetBoostWindow after now.
-func (b *weeklyResetBoost) boostDeadline(auth *Auth, now time.Time) (time.Time, bool) {
+// routingTier returns the tier of auth and, in the urgent tiers, its weekly reset.
+func (b *weeklyResetBoost) routingTier(auth *Auth, now time.Time) (routingTier, time.Time) {
+	exempt := b.sessionExempt(auth)
+	if resetAt, ok := b.urgentResetAt(auth, now); ok {
+		if exempt {
+			return tierUrgentExempt, resetAt
+		}
+		return tierUrgentSessionLimited, resetAt
+	}
+	if exempt {
+		return tierExempt, time.Time{}
+	}
+	return tierSessionLimited, time.Time{}
+}
+
+// urgentResetAt returns the weekly reset of auth when it is known and within
+// WeeklyResetBoostWindow after now.
+func (b *weeklyResetBoost) urgentResetAt(auth *Auth, now time.Time) (time.Time, bool) {
 	resetAt, ok := b.weeklyResetAt(auth)
 	if !ok {
 		return time.Time{}, false
@@ -92,42 +122,55 @@ func (b *weeklyResetBoost) boostDeadline(auth *Auth, now time.Time) (time.Time, 
 	if remaining := resetAt.Sub(now); remaining <= 0 || remaining >= WeeklyResetBoostWindow {
 		return time.Time{}, false
 	}
-	if b.sessionLimited(auth) {
-		return resetAt.Add(-WeeklyResetSessionHeadStart), true
-	}
 	return resetAt, true
 }
 
-// boostAuthWeights raises the weight of the most urgent candidates to
-// WeeklyResetBoostWeight in place: those with the earliest boost deadline among auths
-// with a positive weight below the boost. Other weights stay as configured. It is a
-// no-op for a selector without the weekly-reset boost.
-func (b *weeklyResetBoost) boostAuthWeights(weights map[string]int64, auths []*Auth) {
+// rankAuthWeights rewrites the candidate weights in place so that only the best tier
+// present is picked. Candidates are the auths with a positive weight. Those in a worse
+// tier are removed. In the urgent tiers only the ones resetting soonest stay, raised to
+// WeeklyResetBoostWeight; in the others the configured weights stay. Removed candidates
+// keep their smooth weighted credits, as for any transient exclusion. It is a no-op for a
+// selector without the weekly-reset strategy.
+func (b *weeklyResetBoost) rankAuthWeights(weights map[string]int64, auths []*Auth) {
 	if b == nil || len(weights) == 0 {
 		return
 	}
 	now := b.clock()
-	var urgent []string
+	best := tierExempt + 1
+	var chosen []string
 	var earliest time.Time
 	for _, auth := range auths {
 		if auth == nil {
 			continue
 		}
-		weight, ok := weights[auth.ID]
-		if !ok || weight <= 0 || weight >= WeeklyResetBoostWeight {
+		if weight, ok := weights[auth.ID]; !ok || weight <= 0 {
 			continue
 		}
-		deadline, okDeadline := b.boostDeadline(auth, now)
+		tier, resetAt := b.routingTier(auth, now)
 		switch {
-		case !okDeadline:
-		case len(urgent) == 0 || deadline.Before(earliest):
-			urgent, earliest = []string{auth.ID}, deadline
-		case deadline.Equal(earliest):
-			urgent = append(urgent, auth.ID)
+		case tier > best:
+		case tier < best || (tier.urgent() && resetAt.Before(earliest)):
+			best, chosen, earliest = tier, []string{auth.ID}, resetAt
+		case !tier.urgent() || resetAt.Equal(earliest):
+			chosen = append(chosen, auth.ID)
 		}
 	}
-	for _, authID := range urgent {
-		weights[authID] = WeeklyResetBoostWeight
+	if len(chosen) == 0 {
+		return
+	}
+	keep := make(map[string]struct{}, len(chosen))
+	for _, authID := range chosen {
+		keep[authID] = struct{}{}
+	}
+	for authID := range weights {
+		if _, ok := keep[authID]; !ok {
+			delete(weights, authID)
+		}
+	}
+	if best.urgent() {
+		for _, authID := range chosen {
+			weights[authID] = WeeklyResetBoostWeight
+		}
 	}
 }
 
@@ -143,16 +186,17 @@ func (b *weeklyResetBoost) weeklyResetAt(auth *Auth) (time.Time, bool) {
 	return resetAt, ok
 }
 
-// sessionLimited reports whether auth has a 5-hour session limit, from the more recent
-// of its passive response-header snapshot and a registered hint. Unknown counts as no
-// limit. On equal observation times the header snapshot wins.
-func (b *weeklyResetBoost) sessionLimited(auth *Auth) bool {
+// sessionExempt reports whether auth is known to have no 5-hour session limit, from the
+// more recent of its passive response-header snapshot and a registered hint. Unknown
+// counts as limited: only a credential seen without the limit is exempt. On equal
+// observation times the header snapshot wins.
+func (b *weeklyResetBoost) sessionExempt(auth *Auth) bool {
 	limited, ok := sessionLimitFromSignals(auth.Quota.Signals)
 	hint, hintObservedAt, okHint := b.sessionRegistry().get(auth.ID)
 	if okHint && (!ok || hintObservedAt.After(auth.Quota.ObservedAt)) {
-		return hint
+		return !hint
 	}
-	return ok && limited
+	return ok && !limited
 }
 
 // sessionLimitFromSignals reads from a passive quota snapshot whether the credential
@@ -362,7 +406,7 @@ func (r *quotaHintRegistry[V]) evictOldestLocked() {
 	delete(r.hints, oldestID)
 }
 
-// scheduledWeightFuncLocked returns the weekly-reset boost for weighted scheduler
+// scheduledWeightFuncLocked returns the weekly-reset ranking for weighted scheduler
 // picks, or nil when configured weights apply. Callers hold s.mu.
 func (s *authScheduler) scheduledWeightFuncLocked(strategy schedulerStrategy) scheduledWeightFunc {
 	if s == nil || s.resetBoost == nil || strategy != schedulerStrategyWeightedRoundRobin {
@@ -388,6 +432,6 @@ func (s *authScheduler) scheduledWeightFuncLocked(strategy schedulerStrategy) sc
 			}
 			auths = append(auths, auth)
 		}
-		boost.boostAuthWeights(weights, auths)
+		boost.rankAuthWeights(weights, auths)
 	}
 }

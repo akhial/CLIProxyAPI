@@ -163,12 +163,18 @@ routing:
   strategy: "round-robin" # round-robin (default), weighted-round-robin, weekly-reset-weighted-round-robin, fill-first
   # weighted-round-robin uses each credential's integer weight (default 1, maximum 1,000,000).
   # Non-positive weights exclude the credential while this strategy is active.
-  # weekly-reset-weighted-round-robin (alias weekly-reset-wrr) works the same, except that the
-  # most urgent available credential whose weekly quota resets within 36 hours is raised to
-  # weight 1,000,000 so its remaining quota is spent before the reset. Most urgent means the
-  # soonest reset, a credential with a 5-hour session limit counting one hour earlier; ties
-  # share the boost. Claude and Codex reset times and 5-hour limits come from response headers
-  # and the quota history poller; unknown reset times keep the configured weight.
+  # weekly-reset-weighted-round-robin (alias weekly-reset-wrr) works the same, except that each
+  # pick goes to the first of these tiers with an available credential:
+  #   1. weekly quota resets within 36 hours, and the credential has a 5-hour session limit
+  #   2. weekly quota resets within 36 hours
+  #   3. the credential has a 5-hour session limit
+  #   4. the credential has no 5-hour session limit
+  # In tiers 1 and 2 the soonest reset takes every pick so its quota is spent before it
+  # expires; ties share evenly. In tiers 3 and 4 the configured weights apply. Session-limited
+  # credentials go first because they can spend only one session at a time; exempt ones take
+  # the overflow. When a tier's credentials cool down, the next tier serves. Claude and Codex
+  # reset times and 5-hour limits come from response headers and the quota history poller; a
+  # credential counts as exempt only once it has been seen without the 5-hour limit.
   # For OAuth/file credentials, add a top-level numeric "weight" field to the auth JSON.
   # Enable universal session-sticky routing for all clients.
   # Explicit Claude Code, Codex, OpenCode, and pi session headers are preferred,
