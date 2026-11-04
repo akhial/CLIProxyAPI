@@ -2,6 +2,7 @@ package management
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -33,6 +35,19 @@ type quotaHistoryAccount struct {
 	Email     string                     `json:"email"`
 	Plan      string                     `json:"plan"`
 	Windows   []quotaHistoryWindowSeries `json:"windows"`
+	Routing   *quotaHistoryRouting       `json:"routing,omitempty"`
+}
+
+// quotaHistoryRouting is where the weekly-reset routing strategy places a credential
+// now, so the management UI shows the router's own order.
+type quotaHistoryRouting struct {
+	// Deadline is the effective deadline (Unix ms): the earliest goes first.
+	Deadline       int64 `json:"deadline,omitempty"`
+	SessionLimited bool  `json:"session_limited"`
+	// SessionShare is the weekly % one full 5-hour window allows (0 when unknown).
+	SessionShare float64 `json:"session_share,omitempty"`
+	// Drain is the weekly %/h the pool's daily traffic would spend if it all went here.
+	Drain float64 `json:"drain,omitempty"`
 }
 
 type quotaHistoryWindowSeries struct {
@@ -108,7 +123,34 @@ func (h *Handler) GetQuotaHistory(c *gin.Context) {
 	response.Enabled = true
 	response.PollIntervalSeconds = int64(collector.pollInterval / time.Second)
 	response.Accounts = buildQuotaHistoryAccounts(samples)
+	addQuotaHistoryRouting(response.Accounts, h.quotaHistoryAuths(), now)
 	c.JSON(http.StatusOK, response)
+}
+
+// addQuotaHistoryRouting fills each account's routing placement from its live credential.
+func addQuotaHistoryRouting(accounts []quotaHistoryAccount, auths []*coreauth.Auth, now time.Time) {
+	byID := make(map[string]*coreauth.Auth, len(auths))
+	for _, auth := range auths {
+		if auth != nil {
+			byID[auth.ID] = auth
+		}
+	}
+	for index := range accounts {
+		auth := byID[accounts[index].AuthID]
+		if auth == nil {
+			continue
+		}
+		deadline, limited := coreauth.WeeklyResetRouting(auth, now)
+		routing := &quotaHistoryRouting{SessionLimited: limited}
+		if !deadline.IsZero() {
+			routing.Deadline = deadline.UnixMilli()
+		}
+		if stats, _, ok := coreauth.RoutingStatsFor(auth.ID); ok {
+			routing.SessionShare = math.Round(stats.SessionSharePercent*100) / 100
+			routing.Drain = math.Round(stats.DrainPercentPerHour*100) / 100
+		}
+		accounts[index].Routing = routing
+	}
 }
 
 // parseQuotaHistoryRange validates the from/to query values (Unix ms) and

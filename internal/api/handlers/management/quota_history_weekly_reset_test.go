@@ -8,7 +8,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-func TestQuotaHistoryCollector_PublishesWeeklyResetHint(t *testing.T) {
+func TestQuotaHistoryCollector_PublishesQuotaHints(t *testing.T) {
 	claude := testQuotaHistoryClaudeAuth()
 	claude.ID = "weekly-hint-" + claude.ID
 	codex := testQuotaHistoryCodexAuth()
@@ -17,19 +17,19 @@ func TestQuotaHistoryCollector_PublishesWeeklyResetHint(t *testing.T) {
 	collector.tick(context.Background())
 
 	wantClaude := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
-	resetAt, observedAt, ok := coreauth.WeeklyResetHint(claude.ID)
-	if !ok || !resetAt.Equal(wantClaude) || !observedAt.Equal(clock.Now()) {
-		t.Fatalf("claude hint = %v, %v, %v; want reset %v observed %v", resetAt, observedAt, ok, wantClaude, clock.Now())
+	weekly, observedAt, ok := coreauth.WeeklyQuotaHint(claude.ID)
+	if !ok || !weekly.ResetAt.Equal(wantClaude) || weekly.UsedPercent != 16 || !observedAt.Equal(clock.Now()) {
+		t.Fatalf("claude hint = %+v, %v, %v; want reset %v used 16 observed %v", weekly, observedAt, ok, wantClaude, clock.Now())
 	}
 	// The Codex weekly window comes from the 604800s secondary window, not the 5h primary.
 	wantCodex := time.Unix(1762000000, 0)
-	if resetAt, _, ok = coreauth.WeeklyResetHint(codex.ID); !ok || !resetAt.Equal(wantCodex) {
-		t.Fatalf("codex hint = %v, %v; want reset %v", resetAt, ok, wantCodex)
+	if weekly, _, ok = coreauth.WeeklyQuotaHint(codex.ID); !ok || !weekly.ResetAt.Equal(wantCodex) || weekly.UsedPercent != 30 {
+		t.Fatalf("codex hint = %+v, %v; want reset %v used 30", weekly, ok, wantCodex)
 	}
 	// Both usage reads list a 5-hour window.
 	for _, authID := range []string{claude.ID, codex.ID} {
-		if limited, observedAt, okLimit := coreauth.SessionLimitHint(authID); !okLimit || !limited || !observedAt.Equal(clock.Now()) {
-			t.Fatalf("%s session hint = %v, %v, %v; want limited at %v", authID, limited, observedAt, okLimit, clock.Now())
+		if session, observedAt, okLimit := coreauth.SessionQuotaHint(authID); !okLimit || !session.Limited || session.UsedPercent <= 0 || session.ResetAt.IsZero() || !observedAt.Equal(clock.Now()) {
+			t.Fatalf("%s session hint = %+v, %v, %v; want limited with use and reset at %v", authID, session, observedAt, okLimit, clock.Now())
 		}
 	}
 }
@@ -41,18 +41,18 @@ func TestQuotaHistoryRoutingHints_SessionLimit(t *testing.T) {
 	authID := "session-hint-" + t.Name()
 
 	publishQuotaHistoryRoutingHints(authID, at, []quotaHistoryWindow{fiveHour, weekly})
-	if limited, _, ok := coreauth.SessionLimitHint(authID); !ok || !limited {
-		t.Fatalf("with five_hour: hint = %v, %v; want limited", limited, ok)
+	if session, _, ok := coreauth.SessionQuotaHint(authID); !ok || !session.Limited || session.UsedPercent != 3 {
+		t.Fatalf("with five_hour: hint = %+v, %v; want limited, 3%% used", session, ok)
 	}
 	// An exempt plan drops five_hour; a later sample without it clears the limit.
 	publishQuotaHistoryRoutingHints(authID, at.Add(time.Minute), []quotaHistoryWindow{weekly})
-	if limited, _, ok := coreauth.SessionLimitHint(authID); !ok || limited {
-		t.Fatalf("without five_hour: hint = %v, %v; want not limited", limited, ok)
+	if session, _, ok := coreauth.SessionQuotaHint(authID); !ok || session.Limited {
+		t.Fatalf("without five_hour: hint = %+v, %v; want not limited", session, ok)
 	}
 	// A sample without a weekly window does not describe the plan.
 	publishQuotaHistoryRoutingHints(authID, at.Add(2*time.Minute), []quotaHistoryWindow{fiveHour})
-	if limited, observedAt, _ := coreauth.SessionLimitHint(authID); limited || !observedAt.Equal(at.Add(time.Minute)) {
-		t.Fatalf("five_hour alone changed the hint: %v at %v", limited, observedAt)
+	if session, observedAt, _ := coreauth.SessionQuotaHint(authID); session.Limited || !observedAt.Equal(at.Add(time.Minute)) {
+		t.Fatalf("five_hour alone changed the hint: %+v at %v", session, observedAt)
 	}
 }
 
@@ -77,8 +77,8 @@ func TestQuotaHistoryCollector_RestoresWeeklyResetHintFromStore(t *testing.T) {
 
 	collector.tick(context.Background())
 
-	gotReset, gotObserved, ok := coreauth.WeeklyResetHint(auth.ID)
-	if !ok || !gotReset.Equal(time.UnixMilli(resetAt.UnixMilli())) || !gotObserved.Equal(time.UnixMilli(sampledAt.UnixMilli())) {
-		t.Fatalf("restored hint = %v, %v, %v; want reset %v observed %v", gotReset, gotObserved, ok, resetAt, sampledAt)
+	got, gotObserved, ok := coreauth.WeeklyQuotaHint(auth.ID)
+	if !ok || !got.ResetAt.Equal(time.UnixMilli(resetAt.UnixMilli())) || got.UsedPercent != 40 || !gotObserved.Equal(time.UnixMilli(sampledAt.UnixMilli())) {
+		t.Fatalf("restored hint = %+v, %v, %v; want reset %v used 40 observed %v", got, gotObserved, ok, resetAt, sampledAt)
 	}
 }

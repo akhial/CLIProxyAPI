@@ -32,7 +32,7 @@ func weeklyResetRoutingAuths(t *testing.T) []*coreauth.Auth {
 	now := time.Now()
 	soon := &coreauth.Auth{ID: "service-weekly-soon-" + t.Name(), Provider: "claude"}
 	unknown := &coreauth.Auth{ID: "service-weekly-unknown-" + t.Name(), Provider: "claude"}
-	coreauth.SetWeeklyResetHint(soon.ID, now.Add(12*time.Hour), now)
+	coreauth.SetWeeklyQuotaHint(soon.ID, coreauth.WeeklyQuota{ResetAt: now.Add(12 * time.Hour), UsedPercent: -1}, now)
 	return []*coreauth.Auth{soon, unknown}
 }
 
