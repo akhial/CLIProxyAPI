@@ -160,8 +160,8 @@ Backend:
 
 | File | Fork change |
 |---|---|
-| `sdk/cliproxy/auth/selector.go` | `WeightedRoundRobinSelector.resetBoost` field. `Pick` calls `s.resetBoost.boostAuthWeights(weights, available)` before picking. `pickSmoothWeightedAuth` takes the effective `weights`. |
-| `sdk/cliproxy/auth/scheduler.go` | Scheduler keeps `selectorResetBoost(selector)`. Every weighted pick path (single-provider, mixed-provider, websocket) boosts the weight vector before picking, and quota data comes from the newest auth snapshot. **Rule: wherever upstream computes weighted-round-robin weights, the boost must be applied.** |
+| `sdk/cliproxy/auth/selector.go` | `WeightedRoundRobinSelector.resetBoost` field. `Pick` calls `s.resetBoost.rankAuthWeights(weights, available)` before picking. `pickSmoothWeightedAuth` takes the effective `weights`. |
+| `sdk/cliproxy/auth/scheduler.go` | Scheduler keeps `selectorResetBoost(selector)`. Every weighted pick path (single-provider, mixed-provider, websocket) ranks the weight vector before picking, and quota data comes from the newest auth snapshot. **Rule: wherever upstream computes weighted-round-robin weights, the ranking must be applied.** |
 | `sdk/cliproxy/service_config.go` | `weekly-reset-weighted-round-robin` / `weekly-reset-wrr` in the strategy switch, built with `NewWeeklyResetWeightedRoundRobinSelector()`. |
 | `internal/api/handlers/management/config_basic.go` | Same names in `normalizeRoutingStrategy`. |
 | `internal/api/server.go` | `s.mgmt.StartQuotaHistory()` + `defer s.mgmt.StopQuotaHistory()` in `Start()`. |
@@ -254,25 +254,33 @@ Older images stay local until pruned, so rolling back the image is instant.
 - Quota history lives in `config/quota-history/` (root-owned, 35-day retention).
   Env knobs: `QUOTA_HISTORY_DISABLE`, `QUOTA_HISTORY_DIR`,
   `QUOTA_HISTORY_POLL_INTERVAL` (default `10m`; `0` = header-only).
-- **Weekly-reset boost behaviour**:
-  - The boost holds only while `0 < reset - now < 36h`, so it ends exactly at the
-    reset. The next poll (≤10 min) or response then records the new reset ~7 days
-    out.
-  - Only the most urgent available account is boosted: the soonest reset, with an
-    account that has a 5-hour session limit counting `WeeklyResetSessionHeadStart`
-    (1 h) earlier, since an exempt account empties faster. When it cools down (5-hour
-    limit, 429) the next most urgent account takes over until it is back. Whether an
-    account has the 5-hour limit comes from its unified `5h` headers and from the
-    collector's usage polls (`SetSessionLimitHint`).
-  - An exhausted account keeps the boost on paper, but the proxy benches it after
+- **Weekly-reset routing behaviour**:
+  - Each pick goes to the first tier with an available account:
+    1. weekly reset under 36 h and a 5-hour session limit;
+    2. weekly reset under 36 h;
+    3. a 5-hour session limit;
+    4. no 5-hour session limit (exempt).
+
+    Session-limited accounts go first because they can spend only one session at a
+    time; exempt ones empty faster and take the overflow. When a tier's accounts cool
+    down (5-hour limit, 429), the next tier serves until they are back.
+  - In tiers 1 and 2 only the soonest reset is picked (ties share evenly, at the
+    boost weight). In tiers 3 and 4 the configured weights apply.
+  - Tiers 1 and 2 hold only while `0 < reset - now < 36h`, so they end exactly at
+    the reset. The next poll (≤10 min) or response then records the new reset ~7
+    days out.
+  - Whether an account has the 5-hour limit comes from its unified `5h` headers and
+    from the collector's usage polls (`SetSessionLimitHint`). Until one of them has
+    seen the account without it, it counts as limited.
+  - An exhausted account keeps its tier on paper, but the proxy benches it after
     its first 429 until the weekly reset (cooldown taken from Anthropic's
     `7d-Reset`), so traffic goes elsewhere.
   - Cooldowns are kept in memory unless `routing.cooldown.save-cooldown-status:
-    true`. After a restart, each exhausted-but-boosted account therefore costs one
+    true`. After a restart, each exhausted account in the top tier therefore costs one
     failed attempt before it's benched again (the request is retried on another
     account).
   - A manual reset (Claude banked reset, Codex manual reset) moves the reset time;
-    the boost corrects on the next response or poll, within ≤10 min.
+    the ranking corrects on the next response or poll, within ≤10 min.
 - Upstream's `sdk/cliproxy` tests `TestHandleAuthUpdates_SameRevisionWait…`,
   `TestEndToEndAuthFileReplacement…` and `TestServiceHeartbeatFailover…` are
   timing-sensitive and flake on unmodified upstream too; `verify.sh` retries that
