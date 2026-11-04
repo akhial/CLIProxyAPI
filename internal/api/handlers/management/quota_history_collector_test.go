@@ -474,6 +474,45 @@ func TestHandlerStartStopQuotaHistory(t *testing.T) {
 	(*Handler)(nil).StopQuotaHistory()
 }
 
+func TestHandlerStartQuotaHistoryRestoresRoutingHintsBeforeReturning(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "history")
+	h := &Handler{configFilePath: filepath.Join(root, "config.yaml")}
+	t.Setenv(quotaHistoryDisableEnv, "")
+	t.Setenv(quotaHistoryDirEnv, dir)
+	t.Setenv(quotaHistoryPollIntervalEnv, "0")
+
+	exemptID := "start-restore-exempt-" + t.Name()
+	limitedID := "start-restore-limited-" + t.Name()
+	sampledAt := time.UnixMilli(time.Now().Add(-time.Hour).UnixMilli())
+	resetAt := time.UnixMilli(sampledAt.Add(20 * time.Hour).UnixMilli())
+	weekly := quotaHistoryWindow{ID: quotaHistoryWindowSevenDay, PeriodS: quotaHistoryWeekSeconds, Used: 40, ResetAt: resetAt.UnixMilli()}
+	fiveHour := quotaHistoryWindow{ID: quotaHistoryWindowFiveHour, PeriodS: quotaHistoryFiveHourSeconds, Used: 10}
+	store := newQuotaHistoryStore(dir)
+	for _, sample := range []quotaHistorySample{
+		{T: sampledAt.UnixMilli(), AuthID: exemptID, Provider: "claude", Src: quotaHistorySourcePoll, Windows: []quotaHistoryWindow{weekly}},
+		{T: sampledAt.UnixMilli(), AuthID: limitedID, Provider: "claude", Src: quotaHistorySourcePoll, Windows: []quotaHistoryWindow{fiveHour, weekly}},
+	} {
+		if errAppend := store.Append(sample); errAppend != nil {
+			t.Fatal(errAppend)
+		}
+	}
+
+	h.StartQuotaHistory()
+	t.Cleanup(h.StopQuotaHistory)
+
+	// The first tick runs quotaHistoryStartDelay later; the hints must be there already.
+	if gotReset, gotObserved, ok := coreauth.WeeklyResetHint(exemptID); !ok || !gotReset.Equal(resetAt) || !gotObserved.Equal(sampledAt) {
+		t.Fatalf("weekly reset hint = %v, %v, %v; want %v observed %v", gotReset, gotObserved, ok, resetAt, sampledAt)
+	}
+	if limited, _, ok := coreauth.SessionLimitHint(exemptID); !ok || limited {
+		t.Fatalf("exempt session hint = %v, %v; want known exempt", limited, ok)
+	}
+	if limited, _, ok := coreauth.SessionLimitHint(limitedID); !ok || !limited {
+		t.Fatalf("limited session hint = %v, %v; want known limited", limited, ok)
+	}
+}
+
 func TestHandlerQuotaHistoryDoUsesConfigSnapshot(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer token" {

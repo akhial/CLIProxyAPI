@@ -134,12 +134,15 @@ func (h *Handler) StartQuotaHistory() {
 	}
 	pollInterval := quotaHistoryPollIntervalFromEnv()
 	collector := newQuotaHistoryCollector(h, newQuotaHistoryStore(dir), pollInterval)
+	// Restore before returning: the weekly-reset router reads the routing hints from the
+	// first request on, and live headers only arrive once a credential has served one.
+	restored := collector.restoreState(collector.nowFunc())
 	ctx, cancel := context.WithCancel(context.Background())
 	collector.cancel = cancel
 	collector.done = make(chan struct{})
 	quotaHistoryCollectors.byHandler[h] = collector
 	go collector.run(ctx)
-	log.Infof("quota history: recording Claude/Codex quota samples in %s (poll interval %s)", dir, pollInterval)
+	log.Infof("quota history: recording Claude/Codex quota samples in %s (poll interval %s, %d credentials restored)", dir, pollInterval, restored)
 }
 
 // StopQuotaHistory stops the collector started by StartQuotaHistory and waits
@@ -298,10 +301,7 @@ func (c *quotaHistoryCollector) safeTick(ctx context.Context) {
 // tick records at most one sample per eligible credential.
 func (c *quotaHistoryCollector) tick(ctx context.Context) {
 	now := c.nowFunc()
-	if !c.stateLoaded {
-		c.stateLoaded = true
-		c.loadState(now)
-	}
+	c.restoreState(now)
 	if c.lastPrune.IsZero() || now.Sub(c.lastPrune) >= quotaHistoryPruneInterval {
 		c.lastPrune = now
 		if errPrune := c.store.Prune(now); errPrune != nil {
@@ -319,13 +319,23 @@ func (c *quotaHistoryCollector) tick(ctx context.Context) {
 	}
 }
 
+// restoreState runs loadState once and returns the number of credentials it restored.
+func (c *quotaHistoryCollector) restoreState(now time.Time) int {
+	if c.stateLoaded {
+		return 0
+	}
+	c.stateLoaded = true
+	return c.loadState(now)
+}
+
 // loadState restores the last sample time and plan of each credential so a
-// restart does not poll every credential at once.
-func (c *quotaHistoryCollector) loadState(now time.Time) {
+// restart does not poll every credential at once, and republishes the routing
+// hints of the stored samples. It returns the number of credentials restored.
+func (c *quotaHistoryCollector) loadState(now time.Time) int {
 	samples, errRead := c.store.Read(now.Add(-quotaHistoryStateLookback), now)
 	if errRead != nil {
 		log.WithError(errRead).Warn("quota history: failed to read recent samples")
-		return
+		return 0
 	}
 	for _, sample := range samples {
 		state := c.state(sample.AuthID)
@@ -339,6 +349,7 @@ func (c *quotaHistoryCollector) loadState(now time.Time) {
 			state.plan = sample.Plan
 		}
 	}
+	return len(c.states)
 }
 
 func (c *quotaHistoryCollector) state(authID string) *quotaHistoryAuthState {
