@@ -146,7 +146,7 @@ func findClaudeHistoryFableLimit(limits ojson.Result) ojson.Result {
 }
 
 // parseClaudeProfilePlan derives the plan from a Claude /api/oauth/profile
-// response body: team, max, pro, free, or "" when unknown.
+// response body: team, max20, max5, max, pro, free, or "" when unknown.
 func parseClaudeProfilePlan(body []byte) string {
 	root := quotaHistoryJSONObject(body)
 	if !root.Exists() {
@@ -156,6 +156,15 @@ func parseClaudeProfilePlan(body []byte) string {
 	subscriptionStatus := strings.ToLower(strings.TrimSpace(root.Get("organization.subscription_status").String()))
 	if organizationType == "claude_team" && subscriptionStatus == "active" {
 		return "team"
+	}
+	// Only the organization's rate-limit tier separates Max 5x from Max 20x;
+	// the account flags just say "max". Mirrors the management UI.
+	tier := strings.ToLower(strings.TrimSpace(root.Get("organization.rate_limit_tier").String()))
+	switch {
+	case strings.HasSuffix(tier, "claude_max_20x"):
+		return "max20"
+	case strings.HasSuffix(tier, "claude_max_5x"):
+		return "max5"
 	}
 	// Account flags include personal subscriptions even for a Team-scoped token.
 	hasMax, maxKnown := quotaHistoryFlag(root.Get("account.has_claude_max"))
