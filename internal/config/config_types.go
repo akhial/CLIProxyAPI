@@ -486,11 +486,10 @@ type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
 	// Supported values: "round-robin" (default), "weighted-round-robin",
 	// "weekly-reset-weighted-round-robin", "fill-first".
-	// "weekly-reset-weighted-round-robin" behaves like "weighted-round-robin" but
-	// picks only from the first non-empty tier of available credentials: weekly reset
-	// within 36 hours with a 5-hour session limit, weekly reset within 36 hours, 5-hour
-	// session limit, no 5-hour session limit. In the first two tiers the soonest reset
-	// takes every pick.
+	// "weekly-reset-weighted-round-robin" sends each request to the available
+	// credential with the earliest effective deadline: its weekly reset, moved earlier
+	// for a 5-hour session-limited credential by the time its windows add at the
+	// pool's daily traffic. Session-limited credentials win near-ties (within an hour).
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
 	// SessionAffinity enables universal session-sticky routing for all clients.
