@@ -19,10 +19,10 @@ commits**. List them with `git log --oneline upstream/main..main`.
 Backend stack:
 1. `feat(management): record Claude/Codex quota history`: background collector,
    daily JSONL store, `GET /v8/management/quota/history`.
-2. `feat(routing): add weekly-reset-weighted-round-robin strategy`: weighted
-   round-robin; of the available accounts whose weekly window resets in <36h, the
-   one resetting soonest gets weight 1,000,000 (5-hour session-limited accounts
-   count 1 h earlier; ties share).
+2. `feat(routing): add weekly-reset-weighted-round-robin strategy` and its
+   follow-ups: weighted round-robin restricted to the available account with the
+   earliest effective deadline (weekly reset, moved earlier for 5-hour-limited
+   accounts under heavy traffic); see "Weekly-reset routing behaviour" below.
 3. `docs(fork): …` commits: this `fork/` folder.
 4. `feat(openai): provider-scoped Codex model catalog`: `GET /v1/models?provider=codex`
    (Codex client format) lists only Codex-registered models under their native
@@ -254,33 +254,35 @@ Older images stay local until pruned, so rolling back the image is instant.
 - Quota history lives in `config/quota-history/` (root-owned, 35-day retention).
   Env knobs: `QUOTA_HISTORY_DISABLE`, `QUOTA_HISTORY_DIR`,
   `QUOTA_HISTORY_POLL_INTERVAL` (default `10m`; `0` = header-only).
-- **Weekly-reset routing behaviour**:
-  - Each pick goes to the first tier with an available account:
-    1. weekly reset under 36 h and a 5-hour session limit;
-    2. weekly reset under 36 h;
-    3. a 5-hour session limit;
-    4. no 5-hour session limit (exempt).
-
-    Session-limited accounts go first because they can spend only one session at a
-    time; exempt ones empty faster and take the overflow. When a tier's accounts cool
-    down (5-hour limit, 429), the next tier serves until they are back.
-  - In tiers 1 and 2 only the soonest reset is picked (ties share evenly, at the
-    boost weight). In tiers 3 and 4 the configured weights apply.
-  - Tiers 1 and 2 hold only while `0 < reset - now < 36h`, so they end exactly at
-    the reset. The next poll (≤10 min) or response then records the new reset ~7
-    days out.
-  - Whether an account has the 5-hour limit comes from its unified `5h` headers and
-    from the collector's usage polls (`SetSessionLimitHint`). Until one of them has
-    seen the account without it, it counts as limited.
-  - On startup, `StartQuotaHistory` republishes the reset and 5-hour hints of the
-    last 48 h of stored samples before the server accepts connections. Without that,
-    requests in the first seconds after a deploy see no quota data and spread evenly,
-    and session affinity keeps them there.
-  - An exhausted account keeps its tier on paper, but the proxy benches it after
+- **Weekly-reset routing behaviour** (earliest effective deadline first; chosen by
+  simulation against the best possible schedule, see `rankAuthWeights`):
+  - Every pick goes to the available account with the earliest effective deadline:
+    its weekly reset, moved earlier for a 5-hour-limited account by the extra time
+    its windows add to spending the rest of its week at the pool's 1-day average
+    traffic. Under light traffic that is nothing (plain earliest reset first); under
+    heavy traffic a limited account starts early enough to use its windows in time.
+  - Within `WeeklyResetTieBand` (1 h) of the earliest deadline, limited accounts go
+    first. Exact ties share by configured weight; unknown resets rank last. A passed
+    reset counts as the next week's, with nothing used.
+  - When the chosen account cools down (5-hour limit, 429), the next deadline serves
+    until it is back.
+  - The collector (`quota_history_routing.go`) measures every 10 min, from the last
+    7 days of history: each account's weekly share of one full 5-hour window (median
+    of windows that ended in the last 48 h; Anthropic changed the ratio on
+    2026-11-03) and the pool's traffic over the last 24 h, converted to each
+    account's %/h by plan size (Pro 1, Max 5, Ultra 10). `SetRoutingStats`.
+  - Weekly and 5-hour usage come from the unified `7d`/`5h` headers and the
+    collector's samples (`SetWeeklyQuotaHint`, `SetSessionQuotaHint`), newest wins.
+    An account counts as limited until one of them has seen it without the 5-hour
+    window. On startup, `StartQuotaHistory` republishes the hints of the last 48 h of
+    samples and measures the stats before the server accepts connections.
+  - `GET /v8/management/quota/history` returns each account's `routing` (deadline,
+    session_limited, session_share, drain); the UI's Priority badge and forecast use it.
+  - An exhausted account keeps its deadline on paper, but the proxy benches it after
     its first 429 until the weekly reset (cooldown taken from Anthropic's
     `7d-Reset`), so traffic goes elsewhere.
   - Cooldowns are kept in memory unless `routing.cooldown.save-cooldown-status:
-    true`. After a restart, each exhausted account in the top tier therefore costs one
+    true`. After a restart, each exhausted account ranked first therefore costs one
     failed attempt before it's benched again (the request is retried on another
     account).
   - A manual reset (Claude banked reset, Codex manual reset) moves the reset time;
