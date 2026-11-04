@@ -18,10 +18,28 @@ type weeklyResetTestClock struct{ now time.Time }
 func (c *weeklyResetTestClock) Now() time.Time          { return c.now }
 func (c *weeklyResetTestClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
 
-// newWeeklyResetTestBoost returns a boost with an isolated hint registry and a manual clock.
+// newWeeklyResetTestBoost returns a boost with isolated hint registries and a manual clock.
 func newWeeklyResetTestBoost() (*weeklyResetBoost, *weeklyResetTestClock) {
 	clock := &weeklyResetTestClock{now: weeklyResetTestBase}
-	return &weeklyResetBoost{now: clock.Now, hints: &weeklyResetHintRegistry{}}, clock
+	return &weeklyResetBoost{now: clock.Now, hints: &weeklyResetHintRegistry{}, sessionHints: &sessionLimitHintRegistry{}}, clock
+}
+
+// boostedWeight is the weight the boost gives auth when it is the only candidate.
+func boostedWeight(boost *weeklyResetBoost, auth *Auth, configured int64) int64 {
+	weights := map[string]int64{auth.ID: configured}
+	boost.boostAuthWeights(weights, []*Auth{auth})
+	return weights[auth.ID]
+}
+
+// claudeExemptQuota is a passive Claude snapshot of a plan without the 5-hour limit.
+func claudeExemptQuota(resetAt, observedAt time.Time) QuotaState {
+	return QuotaState{
+		ObservedAt: observedAt,
+		Signals: map[string]string{
+			"Anthropic-Ratelimit-Unified-7d-Utilization": "0.4",
+			"Anthropic-Ratelimit-Unified-7d-Reset":       strconv.FormatInt(resetAt.Unix(), 10),
+		},
+	}
 }
 
 // claudeWeeklyQuota is a passive Claude snapshot whose weekly window resets at resetAt.
@@ -79,16 +97,16 @@ func TestWeeklyResetBoostEffectiveWeight_Window(t *testing.T) {
 			if tc.resetIn != nil {
 				auth.Quota = claudeWeeklyQuota(clock.Now().Add(*tc.resetIn), observedAt)
 			}
-			if got := boost.effectiveWeight(auth, authWeight(auth), clock.Now()); got != tc.want {
-				t.Fatalf("effectiveWeight() = %d, want %d", got, tc.want)
+			if got := boostedWeight(boost, auth, authWeight(auth)); got != tc.want {
+				t.Fatalf("boosted weight = %d, want %d", got, tc.want)
 			}
 		})
 	}
 
 	var noBoost *weeklyResetBoost
 	auth := weeklyResetTestAuth("a", "claude", "3", claudeWeeklyQuota(weeklyResetTestBase.Add(time.Hour), observedAt))
-	if got := noBoost.effectiveWeight(auth, 3, weeklyResetTestBase); got != 3 {
-		t.Fatalf("nil boost effectiveWeight() = %d, want configured 3", got)
+	if got := boostedWeight(noBoost, auth, 3); got != 3 {
+		t.Fatalf("nil boost weight = %d, want configured 3", got)
 	}
 }
 
@@ -276,13 +294,13 @@ func TestWeeklyResetBoost_PrefersMostRecentObservation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			boost, clock := newWeeklyResetTestBoost()
+			boost, _ := newWeeklyResetTestBoost()
 			auth := weeklyResetTestAuth("a", "claude", "1", tc.quota)
 			if tc.hint != nil {
 				boost.hints.set(auth.ID, tc.hint.resetAt, tc.hint.observedAt)
 			}
-			if got := boost.effectiveWeight(auth, 1, clock.Now()); got != tc.want {
-				t.Fatalf("effectiveWeight() = %d, want %d", got, tc.want)
+			if got := boostedWeight(boost, auth, 1); got != tc.want {
+				t.Fatalf("boosted weight = %d, want %d", got, tc.want)
 			}
 		})
 	}
@@ -308,22 +326,148 @@ func TestWeeklyResetWeightedRoundRobinSelectorPick_BoostedAuthTakesAllPicks(t *t
 	}
 }
 
-func TestWeeklyResetWeightedRoundRobinSelectorPick_BoostedAuthsShareEvenly(t *testing.T) {
+func TestWeeklyResetWeightedRoundRobinSelectorPick_MostUrgentAuthTakesAllPicks(t *testing.T) {
 	t.Parallel()
 
 	boost, clock := newWeeklyResetTestBoost()
 	selector := &WeightedRoundRobinSelector{resetBoost: boost}
 	auths := []*Auth{
-		weeklyResetTestAuth("a", "claude", "1", claudeWeeklyQuota(clock.Now().Add(10*time.Hour), clock.Now())),
+		weeklyResetTestAuth("a", "claude", "1", claudeWeeklyQuota(clock.Now().Add(35*time.Hour), clock.Now())),
 		weeklyResetTestAuth("b", "codex", "7", QuotaState{}),
 		weeklyResetTestAuth("c", "claude", "1", QuotaState{}),
 	}
-	boost.hints.set("b", clock.Now().Add(30*time.Hour), clock.Now())
+	boost.hints.set("b", clock.Now().Add(12*time.Hour), clock.Now())
 	counts := countWeeklyResetPicks(t, 1000, func() (*Auth, error) {
 		return selector.Pick(context.Background(), "mixed", "model", cliproxyexecutor.Options{}, auths)
 	})
+	if counts["b"] != 1000 {
+		t.Fatalf("picks = %#v, want all 1000 on b resetting in 12h", counts)
+	}
+}
+
+func TestWeeklyResetWeightedRoundRobinSelectorPick_TiedAuthsShareEvenly(t *testing.T) {
+	t.Parallel()
+
+	boost, clock := newWeeklyResetTestBoost()
+	selector := &WeightedRoundRobinSelector{resetBoost: boost}
+	resetAt := clock.Now().Add(20 * time.Hour)
+	auths := []*Auth{
+		weeklyResetTestAuth("a", "claude", "1", claudeWeeklyQuota(resetAt, clock.Now())),
+		weeklyResetTestAuth("b", "claude", "4", claudeWeeklyQuota(resetAt, clock.Now())),
+		weeklyResetTestAuth("c", "claude", "1", QuotaState{}),
+	}
+	counts := countWeeklyResetPicks(t, 1000, func() (*Auth, error) {
+		return selector.Pick(context.Background(), "claude", "model", cliproxyexecutor.Options{}, auths)
+	})
 	if counts["a"] != 500 || counts["b"] != 500 || counts["c"] != 0 {
 		t.Fatalf("picks = %#v, want a:b=500:500 and c unused", counts)
+	}
+}
+
+func TestWeeklyResetBoost_SessionLimitedAuthGoesFirstWithinHeadStart(t *testing.T) {
+	t.Parallel()
+
+	now := weeklyResetTestBase
+	cases := []struct {
+		name                  string
+		exemptIn, limitedIn   time.Duration
+		wantLimited, wantBoth bool
+	}{
+		{name: "same reset", exemptIn: 26 * time.Hour, limitedIn: 26 * time.Hour, wantLimited: true},
+		{name: "limited 50m later", exemptIn: 26 * time.Hour, limitedIn: 26*time.Hour + 50*time.Minute, wantLimited: true},
+		{name: "limited exactly the head start later", exemptIn: 26 * time.Hour, limitedIn: 27 * time.Hour, wantBoth: true},
+		{name: "limited 70m later", exemptIn: 26 * time.Hour, limitedIn: 27*time.Hour + 10*time.Minute},
+		{name: "exempt much later", exemptIn: 35 * time.Hour, limitedIn: 12 * time.Hour, wantLimited: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			boost, _ := newWeeklyResetTestBoost()
+			exempt := weeklyResetTestAuth("exempt", "claude", "1", claudeExemptQuota(now.Add(tc.exemptIn), now))
+			limited := weeklyResetTestAuth("limited", "claude", "1", claudeWeeklyQuota(now.Add(tc.limitedIn), now))
+			weights := map[string]int64{"exempt": 1, "limited": 1}
+			boost.boostAuthWeights(weights, []*Auth{exempt, limited})
+			wantExempt, wantLimited := int64(WeeklyResetBoostWeight), int64(1)
+			switch {
+			case tc.wantBoth:
+				wantLimited = WeeklyResetBoostWeight
+			case tc.wantLimited:
+				wantExempt, wantLimited = 1, WeeklyResetBoostWeight
+			}
+			if weights["exempt"] != wantExempt || weights["limited"] != wantLimited {
+				t.Fatalf("weights = %#v, want exempt %d limited %d", weights, wantExempt, wantLimited)
+			}
+		})
+	}
+}
+
+func TestWeeklyResetBoost_SessionLimitPrefersMostRecentObservation(t *testing.T) {
+	t.Parallel()
+
+	now := weeklyResetTestBase
+	resetAt := now.Add(26 * time.Hour)
+	rank := func(boost *weeklyResetBoost, exempt *Auth) map[string]int64 {
+		other := weeklyResetTestAuth("other", "claude", "1", claudeExemptQuota(resetAt, now))
+		weights := map[string]int64{exempt.ID: 1, other.ID: 1}
+		boost.boostAuthWeights(weights, []*Auth{exempt, other})
+		return weights
+	}
+
+	// A newer usage read that still lists the 5-hour window beats exempt headers.
+	boost, _ := newWeeklyResetTestBoost()
+	auth := weeklyResetTestAuth("a", "claude", "1", claudeExemptQuota(resetAt, now.Add(-time.Hour)))
+	boost.sessionHints.set("a", true, now)
+	if weights := rank(boost, auth); weights["a"] != WeeklyResetBoostWeight || weights["other"] != 1 {
+		t.Fatalf("newer session hint: weights = %#v, want a boosted alone", weights)
+	}
+
+	// An older hint loses to the headers, and so does a hint at the same instant.
+	boost, _ = newWeeklyResetTestBoost()
+	boost.sessionHints.set("a", true, now.Add(-2*time.Hour))
+	if weights := rank(boost, auth); weights["a"] != WeeklyResetBoostWeight || weights["other"] != WeeklyResetBoostWeight {
+		t.Fatalf("older session hint: weights = %#v, want a and other tied", weights)
+	}
+
+	// A hint alone marks an idle credential as exempt.
+	boost, _ = newWeeklyResetTestBoost()
+	idle := weeklyResetTestAuth("idle", "claude", "1", QuotaState{})
+	boost.hints.set("idle", resetAt, now)
+	boost.sessionHints.set("idle", false, now)
+	limited := weeklyResetTestAuth("limited", "claude", "1", claudeWeeklyQuota(resetAt.Add(30*time.Minute), now))
+	weights := map[string]int64{"idle": 1, "limited": 1}
+	boost.boostAuthWeights(weights, []*Auth{idle, limited})
+	if weights["limited"] != WeeklyResetBoostWeight || weights["idle"] != 1 {
+		t.Fatalf("idle exempt hint: weights = %#v, want limited boosted", weights)
+	}
+}
+
+func TestSessionLimitFromSignals(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		signals     map[string]string
+		limited, ok bool
+	}{
+		{name: "claude with 5h", signals: map[string]string{"Anthropic-Ratelimit-Unified-7d-Reset": "1", "Anthropic-Ratelimit-Unified-5h-Utilization": "0.2"}, limited: true, ok: true},
+		{name: "claude exempt", signals: map[string]string{"anthropic-ratelimit-unified-7d-utilization": "0.2"}, ok: true},
+		{name: "claude 5h only", signals: map[string]string{"Anthropic-Ratelimit-Unified-5h-Reset": "1"}},
+		{name: "codex 5h primary", signals: map[string]string{"X-Codex-Primary-Window-Minutes": "300", "X-Codex-Secondary-Window-Minutes": "10080"}, limited: true, ok: true},
+		{name: "codex weekly only", signals: map[string]string{"X-Codex-Primary-Window-Minutes": "10080"}, ok: true},
+		{name: "codex image limit", signals: map[string]string{"X-Codex-Active-Limit": "imagegen_x", "X-Codex-Primary-Window-Minutes": "300"}},
+		{name: "empty"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if limited, ok := sessionLimitFromSignals(tc.signals); limited != tc.limited || ok != tc.ok {
+				t.Fatalf("sessionLimitFromSignals() = %v, %v; want %v, %v", limited, ok, tc.limited, tc.ok)
+			}
+		})
+	}
+
+	authID := "session-limit-public-" + t.Name()
+	SetSessionLimitHint(authID, false, weeklyResetTestBase)
+	if limited, observedAt, ok := SessionLimitHint(authID); !ok || limited || !observedAt.Equal(weeklyResetTestBase) {
+		t.Fatalf("SessionLimitHint() = %v, %v, %v", limited, observedAt, ok)
 	}
 }
 
@@ -432,6 +576,32 @@ func TestSchedulerPick_WeeklyResetBoost(t *testing.T) {
 	clock.Advance(20*time.Hour + time.Minute)
 	if counts := countWeeklyResetPicks(t, 20, pick); counts["a"] != 10 || counts["b"] != 10 || counts["c"] != 0 {
 		t.Fatalf("scheduler picks after both resets = %#v, want a:b=10:10", counts)
+	}
+}
+
+func TestSchedulerPick_WeeklyResetBoostPrefersMostUrgent(t *testing.T) {
+	t.Parallel()
+
+	boost, clock := newWeeklyResetTestBoost()
+	later := weeklyResetTestAuth("later", "claude", "1", claudeWeeklyQuota(clock.Now().Add(30*time.Hour), clock.Now()))
+	sooner := weeklyResetTestAuth("sooner", "claude", "1", QuotaState{})
+	other := weeklyResetTestAuth("other", "claude", "1", QuotaState{})
+	scheduler := newSchedulerForTest(&WeightedRoundRobinSelector{resetBoost: boost}, later, sooner, other)
+	boost.hints.set("sooner", clock.Now().Add(12*time.Hour), clock.Now())
+	pick := func() (*Auth, error) {
+		return scheduler.pickSingle(context.Background(), "claude", "", cliproxyexecutor.Options{}, nil)
+	}
+	if counts := countWeeklyResetPicks(t, 100, pick); counts["sooner"] != 100 {
+		t.Fatalf("scheduler picks = %#v, want all on sooner", counts)
+	}
+
+	// Once the most urgent credential cools down, the next most urgent takes over.
+	cooling := sooner.Clone()
+	cooling.Quota = QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: time.Now().Add(time.Hour)}
+	cooling.Generation++
+	scheduler.upsertAuth(cooling)
+	if counts := countWeeklyResetPicks(t, 100, pick); counts["later"] != 100 {
+		t.Fatalf("scheduler picks with sooner cooling = %#v, want all on later", counts)
 	}
 }
 

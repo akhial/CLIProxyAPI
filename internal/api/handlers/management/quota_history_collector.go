@@ -330,7 +330,7 @@ func (c *quotaHistoryCollector) loadState(now time.Time) {
 	for _, sample := range samples {
 		state := c.state(sample.AuthID)
 		sampledAt := time.UnixMilli(sample.T)
-		publishQuotaHistoryWeeklyReset(sample.AuthID, sampledAt, sample.Windows)
+		publishQuotaHistoryRoutingHints(sample.AuthID, sampledAt, sample.Windows)
 		if !sampledAt.After(state.lastSample) {
 			continue
 		}
@@ -529,7 +529,7 @@ func (c *quotaHistoryCollector) record(auth *coreauth.Auth, provider string, sta
 	// Advance the schedule even if the write fails, so a broken disk does not
 	// turn into an upstream poll on every tick.
 	state.lastSample = at
-	publishQuotaHistoryWeeklyReset(auth.ID, at, windows)
+	publishQuotaHistoryRoutingHints(auth.ID, at, windows)
 	sample := quotaHistorySample{
 		T:         at.UnixMilli(),
 		AuthID:    auth.ID,
@@ -547,14 +547,25 @@ func (c *quotaHistoryCollector) record(auth *coreauth.Auth, provider string, sta
 	}
 }
 
-// publishQuotaHistoryWeeklyReset shares the weekly reset instant with the
-// weekly-reset routing strategy, which cannot read quota history itself.
-func publishQuotaHistoryWeeklyReset(authID string, at time.Time, windows []quotaHistoryWindow) {
+// publishQuotaHistoryRoutingHints shares the weekly reset instant and whether the
+// credential has a 5-hour session limit with the weekly-reset routing strategy,
+// which cannot read quota history itself. Only samples with a weekly window speak
+// for the plan's windows.
+func publishQuotaHistoryRoutingHints(authID string, at time.Time, windows []quotaHistoryWindow) {
+	weekly, session := false, false
 	for _, window := range windows {
-		if window.ID == quotaHistoryWindowSevenDay && window.ResetAt > 0 {
-			coreauth.SetWeeklyResetHint(authID, time.UnixMilli(window.ResetAt), at)
-			return
+		switch window.ID {
+		case quotaHistoryWindowSevenDay:
+			weekly = true
+			if window.ResetAt > 0 {
+				coreauth.SetWeeklyResetHint(authID, time.UnixMilli(window.ResetAt), at)
+			}
+		case quotaHistoryWindowFiveHour:
+			session = true
 		}
+	}
+	if weekly {
+		coreauth.SetSessionLimitHint(authID, session, at)
 	}
 }
 
