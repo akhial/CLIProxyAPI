@@ -709,7 +709,7 @@ func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model s
 		s.states[key] = state
 	}
 	weights := authWeightVector(available)
-	s.resetBoost.boostAuthWeights(weights, available)
+	s.resetBoost.rankAuthWeights(weights, available)
 	state.prepare(weights)
 	picked := pickSmoothWeightedAuth(available, state.current, weights)
 	if picked == nil {
