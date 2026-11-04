@@ -502,14 +502,18 @@ func TestHandlerStartQuotaHistoryRestoresRoutingHintsBeforeReturning(t *testing.
 	t.Cleanup(h.StopQuotaHistory)
 
 	// The first tick runs quotaHistoryStartDelay later; the hints must be there already.
-	if gotReset, gotObserved, ok := coreauth.WeeklyResetHint(exemptID); !ok || !gotReset.Equal(resetAt) || !gotObserved.Equal(sampledAt) {
-		t.Fatalf("weekly reset hint = %v, %v, %v; want %v observed %v", gotReset, gotObserved, ok, resetAt, sampledAt)
+	if got, gotObserved, ok := coreauth.WeeklyQuotaHint(exemptID); !ok || !got.ResetAt.Equal(resetAt) || !gotObserved.Equal(sampledAt) {
+		t.Fatalf("weekly hint = %+v, %v, %v; want reset %v observed %v", got, gotObserved, ok, resetAt, sampledAt)
 	}
-	if limited, _, ok := coreauth.SessionLimitHint(exemptID); !ok || limited {
-		t.Fatalf("exempt session hint = %v, %v; want known exempt", limited, ok)
+	if session, _, ok := coreauth.SessionQuotaHint(exemptID); !ok || session.Limited {
+		t.Fatalf("exempt session hint = %+v, %v; want known exempt", session, ok)
 	}
-	if limited, _, ok := coreauth.SessionLimitHint(limitedID); !ok || !limited {
-		t.Fatalf("limited session hint = %v, %v; want known limited", limited, ok)
+	if session, _, ok := coreauth.SessionQuotaHint(limitedID); !ok || !session.Limited {
+		t.Fatalf("limited session hint = %+v, %v; want known limited", session, ok)
+	}
+	// The routing stats are measured before returning too.
+	if _, _, ok := coreauth.RoutingStatsFor(limitedID); !ok {
+		t.Fatal("routing stats not measured at start")
 	}
 }
 
