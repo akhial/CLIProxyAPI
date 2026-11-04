@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -187,6 +188,56 @@ func TestGetQuotaHistory_ResponseShape(t *testing.T) {
 	_, wide := serveTestQuotaHistory(t, h, "from=0")
 	if got := len(wide["accounts"].([]any)); got != 2 {
 		t.Fatalf("wide accounts = %d, want 2", got)
+	}
+}
+
+func TestBuildQuotaHistoryAccounts_DroppedWindows(t *testing.T) {
+	window := func(id string, used float64) quotaHistoryWindow {
+		return quotaHistoryWindow{ID: id, PeriodS: 604800, Used: used}
+	}
+	exempt := func() []quotaHistorySample {
+		return []quotaHistorySample{
+			// Exempted from the 5-hour limit between the first and second poll.
+			{T: 1000, AuthID: "exempt", Provider: "claude", Src: "poll", Windows: []quotaHistoryWindow{window("five_hour", 5), window("seven_day", 10), window("seven_day_fable", 1)}},
+			{T: 2000, AuthID: "exempt", Provider: "claude", Src: "header", Windows: []quotaHistoryWindow{window("five_hour", 6), window("seven_day", 11)}},
+			{T: 3000, AuthID: "exempt", Provider: "claude", Src: "poll", Windows: []quotaHistoryWindow{window("seven_day", 12), window("seven_day_fable", 2)}},
+			{T: 4000, AuthID: "exempt", Provider: "claude", Src: "header", Windows: []quotaHistoryWindow{window("seven_day", 13)}},
+		}
+	}
+	samples := append(exempt(), []quotaHistorySample{
+		// Headers never carry fable, and the newest header has the 5-hour window.
+		{T: 1000, AuthID: "busy", Provider: "claude", Src: "poll", Windows: []quotaHistoryWindow{window("five_hour", 5), window("seven_day", 10), window("seven_day_fable", 1)}},
+		{T: 2000, AuthID: "busy", Provider: "claude", Src: "header", Windows: []quotaHistoryWindow{window("five_hour", 6), window("seven_day", 11)}},
+		// Two lines of one header sample: together they still report five_hour.
+		{T: 3000, AuthID: "busy", Provider: "claude", Src: "header", Windows: []quotaHistoryWindow{window("five_hour", 7), window("seven_day", 12)}},
+		{T: 3000, AuthID: "busy", Provider: "claude", Src: "header", Windows: []quotaHistoryWindow{window("seven_day", 12)}},
+		// A newer poll lacks the window, but a header at the same instant has it.
+		{T: 1000, AuthID: "tie", Provider: "claude", Src: "poll", Windows: []quotaHistoryWindow{window("five_hour", 5), window("seven_day", 10)}},
+		{T: 2000, AuthID: "tie", Provider: "claude", Src: "poll", Windows: []quotaHistoryWindow{window("seven_day", 11)}},
+		{T: 2000, AuthID: "tie", Provider: "claude", Src: "header", Windows: []quotaHistoryWindow{window("five_hour", 6), window("seven_day", 11)}},
+	}...)
+	dropped := map[string]map[string]int64{}
+	for _, account := range buildQuotaHistoryAccounts(samples) {
+		dropped[account.AuthID] = map[string]int64{}
+		for _, series := range account.Windows {
+			dropped[account.AuthID][series.ID] = series.DroppedAt
+		}
+	}
+	want := map[string]map[string]int64{
+		"exempt": {"five_hour": 4000, "seven_day": 0, "seven_day_fable": 0},
+		"busy":   {"five_hour": 0, "seven_day": 0, "seven_day_fable": 0},
+		"tie":    {"five_hour": 0, "seven_day": 0},
+	}
+	if !reflect.DeepEqual(dropped, want) {
+		t.Fatalf("dropped_at = %v, want %v", dropped, want)
+	}
+
+	raw, errMarshal := json.Marshal(buildQuotaHistoryAccounts(exempt()))
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	if got := strings.Count(string(raw), `"dropped_at":4000`); got != 1 || strings.Count(string(raw), "dropped_at") != 1 {
+		t.Fatalf("json = %s, want dropped_at only on five_hour", raw)
 	}
 }
 
