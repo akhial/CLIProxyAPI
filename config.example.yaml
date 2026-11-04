@@ -196,10 +196,12 @@ routing:
   # Credits are process-local and reset on restart or selector replacement.
   # In Home mode, compatible Home versions charge retained WS turns from usage after completion;
   # CPA preserves the retained credential and concurrency slot instead of redispatching each turn.
-  # weekly-reset-weighted-round-robin (alias weekly-reset-wrr) works the same, except that a
-  # credential whose weekly quota resets within 36 hours is raised to weight 1,000,000 so its
-  # remaining quota is spent before the reset. Claude and Codex reset times come from response
-  # headers and the quota history poller; unknown reset times keep the configured weight.
+  # weekly-reset-weighted-round-robin (alias weekly-reset-wrr) works the same, except that the
+  # most urgent available credential whose weekly quota resets within 36 hours is raised to
+  # weight 1,000,000 so its remaining quota is spent before the reset. Most urgent means the
+  # soonest reset, a credential with a 5-hour session limit counting one hour earlier; ties
+  # share the boost. Claude and Codex reset times and 5-hour limits come from response headers
+  # and the quota history poller; unknown reset times keep the configured weight.
   # For OAuth/file credentials, add a top-level numeric "weight" field to the auth JSON.
   # Enable universal session-sticky routing for all clients.
   # Explicit Claude Code, Codex, OpenCode, pi, and generic (X-Session-ID) session headers
