@@ -348,15 +348,17 @@ func (s *Server) Start() error {
 	httpErrCh := make(chan error, 1)
 	acceptErrCh := make(chan error, 1)
 
+	// Start before serving: it restores the stored quota hints the weekly-reset router
+	// needs from the first request on.
+	s.mgmt.StartQuotaHistory()
+	defer s.mgmt.StopQuotaHistory()
+
 	go func() {
 		httpErrCh <- s.server.Serve(httpListener)
 	}()
 	go func() {
 		acceptErrCh <- s.acceptMuxConnections(listener, httpListener)
 	}()
-
-	s.mgmt.StartQuotaHistory()
-	defer s.mgmt.StopQuotaHistory()
 
 	select {
 	case errServe := <-httpErrCh:
