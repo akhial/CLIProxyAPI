@@ -98,6 +98,11 @@ func TestParseClaudeProfilePlan(t *testing.T) {
 		{`{"account":{"has_claude_pro":true},"organization":{"organization_type":"CLAUDE_TEAM","subscription_status":"ACTIVE"}}`, "team"},
 		{`{"account":{"has_claude_pro":true},"organization":{"organization_type":"claude_team","subscription_status":"past_due"}}`, "pro"},
 		{`{"account":{"has_claude_max":true,"has_claude_pro":true}}`, "max"},
+		{`{"account":{"has_claude_max":true},"organization":{"rate_limit_tier":"default_claude_max_20x"}}`, "max20"},
+		{`{"account":{"has_claude_max":true},"organization":{"rate_limit_tier":"DEFAULT_CLAUDE_MAX_5X"}}`, "max5"},
+		{`{"account":{"has_claude_pro":true},"organization":{"rate_limit_tier":"default_claude_ai"}}`, "pro"},
+		// A Team-scoped token carries the Team tier, not the personal one.
+		{`{"account":{"has_claude_max":true},"organization":{"organization_type":"claude_team","subscription_status":"active","rate_limit_tier":"default_claude_max_20x"}}`, "team"},
 		{`{"account":{"has_claude_max":"false","has_claude_pro":1}}`, "pro"},
 		{`{"account":{"has_claude_max":false,"has_claude_pro":false}}`, "free"},
 		{`{"account":{"has_claude_max":false}}`, ""},
