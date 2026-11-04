@@ -1699,9 +1699,9 @@ func (v *readyView) pickWeighted(predicate func(*scheduledAuth) bool, weightOf s
 	return pickSmoothWeightedScheduled(v.flat, v.weightedState.current, weights)
 }
 
-// scheduledWeightFunc returns the effective weight of an entry with a positive configured
-// weight. A nil func keeps configured weights.
-type scheduledWeightFunc func(entry *scheduledAuth) int64
+// scheduledWeightFunc rewrites the configured weights of the candidate entries in place.
+// A nil func keeps configured weights.
+type scheduledWeightFunc func(weights map[string]int64, entries []*scheduledAuth)
 
 func scheduledWeightVector(entries []*scheduledAuth) map[string]int64 {
 	return scheduledWeightVectorMatching(entries, nil, nil)
@@ -1716,11 +1716,10 @@ func scheduledWeightVectorMatching(entries []*scheduledAuth, predicate func(*sch
 		if predicate != nil && !predicate(entry) {
 			continue
 		}
-		weight := entry.meta.weight
-		if weightOf != nil {
-			weight = weightOf(entry)
-		}
-		weights[entry.auth.ID] = weight
+		weights[entry.auth.ID] = entry.meta.weight
+	}
+	if weightOf != nil {
+		weightOf(weights, entries)
 	}
 	return weights
 }

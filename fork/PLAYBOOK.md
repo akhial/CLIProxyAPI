@@ -20,7 +20,9 @@ Backend stack:
 1. `feat(management): record Claude/Codex quota history`: background collector,
    daily JSONL store, `GET /v8/management/quota/history`.
 2. `feat(routing): add weekly-reset-weighted-round-robin strategy`: weighted
-   round-robin; accounts whose weekly window resets in <36h get weight 1,000,000.
+   round-robin; of the available accounts whose weekly window resets in <36h, the
+   one resetting soonest gets weight 1,000,000 (5-hour session-limited accounts
+   count 1 h earlier; ties share).
 3. `docs(fork): …` commits: this `fork/` folder.
 4. `feat(openai): provider-scoped Codex model catalog`: `GET /v1/models?provider=codex`
    (Codex client format) lists only Codex-registered models under their native
@@ -256,6 +258,12 @@ Older images stay local until pruned, so rolling back the image is instant.
   - The boost holds only while `0 < reset - now < 36h`, so it ends exactly at the
     reset. The next poll (≤10 min) or response then records the new reset ~7 days
     out.
+  - Only the most urgent available account is boosted: the soonest reset, with an
+    account that has a 5-hour session limit counting `WeeklyResetSessionHeadStart`
+    (1 h) earlier, since an exempt account empties faster. When it cools down (5-hour
+    limit, 429) the next most urgent account takes over until it is back. Whether an
+    account has the 5-hour limit comes from its unified `5h` headers and from the
+    collector's usage polls (`SetSessionLimitHint`).
   - An exhausted account keeps the boost on paper, but the proxy benches it after
     its first 429 until the weekly reset (cooldown taken from Anthropic's
     `7d-Reset`), so traffic goes elsewhere.

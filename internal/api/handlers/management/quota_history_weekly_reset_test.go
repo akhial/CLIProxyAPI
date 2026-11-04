@@ -26,6 +26,34 @@ func TestQuotaHistoryCollector_PublishesWeeklyResetHint(t *testing.T) {
 	if resetAt, _, ok = coreauth.WeeklyResetHint(codex.ID); !ok || !resetAt.Equal(wantCodex) {
 		t.Fatalf("codex hint = %v, %v; want reset %v", resetAt, ok, wantCodex)
 	}
+	// Both usage reads list a 5-hour window.
+	for _, authID := range []string{claude.ID, codex.ID} {
+		if limited, observedAt, okLimit := coreauth.SessionLimitHint(authID); !okLimit || !limited || !observedAt.Equal(clock.Now()) {
+			t.Fatalf("%s session hint = %v, %v, %v; want limited at %v", authID, limited, observedAt, okLimit, clock.Now())
+		}
+	}
+}
+
+func TestQuotaHistoryRoutingHints_SessionLimit(t *testing.T) {
+	at := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
+	weekly := quotaHistoryWindow{ID: quotaHistoryWindowSevenDay, PeriodS: quotaHistoryWeekSeconds, Used: 7, ResetAt: at.Add(30 * time.Hour).UnixMilli()}
+	fiveHour := quotaHistoryWindow{ID: quotaHistoryWindowFiveHour, PeriodS: quotaHistoryFiveHourSeconds, Used: 3}
+	authID := "session-hint-" + t.Name()
+
+	publishQuotaHistoryRoutingHints(authID, at, []quotaHistoryWindow{fiveHour, weekly})
+	if limited, _, ok := coreauth.SessionLimitHint(authID); !ok || !limited {
+		t.Fatalf("with five_hour: hint = %v, %v; want limited", limited, ok)
+	}
+	// An exempt plan drops five_hour; a later sample without it clears the limit.
+	publishQuotaHistoryRoutingHints(authID, at.Add(time.Minute), []quotaHistoryWindow{weekly})
+	if limited, _, ok := coreauth.SessionLimitHint(authID); !ok || limited {
+		t.Fatalf("without five_hour: hint = %v, %v; want not limited", limited, ok)
+	}
+	// A sample without a weekly window does not describe the plan.
+	publishQuotaHistoryRoutingHints(authID, at.Add(2*time.Minute), []quotaHistoryWindow{fiveHour})
+	if limited, observedAt, _ := coreauth.SessionLimitHint(authID); limited || !observedAt.Equal(at.Add(time.Minute)) {
+		t.Fatalf("five_hour alone changed the hint: %v at %v", limited, observedAt)
+	}
 }
 
 func TestQuotaHistoryCollector_RestoresWeeklyResetHintFromStore(t *testing.T) {
