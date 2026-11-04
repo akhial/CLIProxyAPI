@@ -39,6 +39,10 @@ type quotaHistoryWindowSeries struct {
 	ID            string              `json:"id"`
 	PeriodSeconds int64               `json:"period_seconds"`
 	Points        []quotaHistoryPoint `json:"points"`
+	// DroppedAt is set when the credential stopped reporting the window: the
+	// instant of the newest sample, from a source that used to report it, that
+	// no longer does. A Claude plan exempt from the 5-hour limit drops five_hour.
+	DroppedAt int64 `json:"dropped_at,omitempty"`
 }
 
 // quotaHistoryPoint encodes as [t_ms, used_percent, reset_at_ms|null].
@@ -73,8 +77,9 @@ func (p quotaHistoryPoint) MarshalJSON() ([]byte, error) {
 //
 // to defaults to now and from to 14 days before to; ranges longer than 45 days
 // are clamped to the 45 days ending at to. Accounts include credentials that
-// have since been removed. When the collector is disabled the response has
-// enabled=false and no accounts.
+// have since been removed. A window the credential no longer reports carries
+// dropped_at. When the collector is disabled the response has enabled=false
+// and no accounts.
 func (h *Handler) GetQuotaHistory(c *gin.Context) {
 	collector := quotaHistoryCollectorFor(h)
 	now := time.Now()
@@ -140,19 +145,40 @@ func parseQuotaHistoryRange(fromRaw, toRaw string, now time.Time) (int64, int64,
 // buildQuotaHistoryAccounts groups samples by credential and window. Points are
 // sorted by time with one point per timestamp (the last recorded wins), and
 // account metadata comes from the most recent sample.
+//
+// A window is dropped when the newest sample from the sources that reported it
+// (usage polls report every window, response headers only some) lacks it.
 func buildQuotaHistoryAccounts(samples []quotaHistorySample) []quotaHistoryAccount {
 	sort.SliceStable(samples, func(i, j int) bool { return samples[i].T < samples[j].T })
 
+	// sourceSample is the window set of a source's newest sample.
+	type sourceSample struct {
+		t   int64
+		ids map[string]bool
+	}
 	type accountSeries struct {
 		account quotaHistoryAccount
 		windows map[string]*quotaHistoryWindowSeries
+		// newestBySource and sourcesByWindow detect dropped windows.
+		newestBySource  map[string]*sourceSample
+		sourcesByWindow map[string]map[string]bool
 	}
 	byAuthID := make(map[string]*accountSeries)
 	for _, sample := range samples {
 		series := byAuthID[sample.AuthID]
 		if series == nil {
-			series = &accountSeries{windows: make(map[string]*quotaHistoryWindowSeries)}
+			series = &accountSeries{
+				windows:         make(map[string]*quotaHistoryWindowSeries),
+				newestBySource:  make(map[string]*sourceSample),
+				sourcesByWindow: make(map[string]map[string]bool),
+			}
 			byAuthID[sample.AuthID] = series
+		}
+		// Lines of one source at the same instant are one sample.
+		newest := series.newestBySource[sample.Src]
+		if newest == nil || sample.T > newest.t {
+			newest = &sourceSample{t: sample.T, ids: make(map[string]bool)}
+			series.newestBySource[sample.Src] = newest
 		}
 		// Samples are sorted, so the last one seen is the most recent.
 		series.account = quotaHistoryAccount{
@@ -176,6 +202,13 @@ func buildQuotaHistoryAccounts(samples []quotaHistorySample) []quotaHistoryAccou
 			if window.PeriodS > 0 {
 				windowSeries.PeriodSeconds = window.PeriodS
 			}
+			newest.ids[window.ID] = true
+			sources := series.sourcesByWindow[window.ID]
+			if sources == nil {
+				sources = make(map[string]bool)
+				series.sourcesByWindow[window.ID] = sources
+			}
+			sources[sample.Src] = true
 			point := quotaHistoryPoint{T: sample.T, Used: window.Used, ResetAt: window.ResetAt}
 			if count := len(windowSeries.Points); count > 0 && windowSeries.Points[count-1].T == sample.T {
 				windowSeries.Points[count-1] = point
@@ -189,7 +222,21 @@ func buildQuotaHistoryAccounts(samples []quotaHistorySample) []quotaHistoryAccou
 	for _, series := range byAuthID {
 		account := series.account
 		account.Windows = make([]quotaHistoryWindowSeries, 0, len(series.windows))
-		for _, windowSeries := range series.windows {
+		for id, windowSeries := range series.windows {
+			var newestT int64
+			reported := false
+			for source := range series.sourcesByWindow[id] {
+				newest := series.newestBySource[source]
+				switch {
+				case newest.t > newestT:
+					newestT, reported = newest.t, newest.ids[id]
+				case newest.t == newestT:
+					reported = reported || newest.ids[id]
+				}
+			}
+			if !reported {
+				windowSeries.DroppedAt = newestT
+			}
 			account.Windows = append(account.Windows, *windowSeries)
 		}
 		sort.Slice(account.Windows, func(i, j int) bool {
