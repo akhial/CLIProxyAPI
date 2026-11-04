@@ -534,9 +534,10 @@ type RoutingConfig struct {
 	// Supported values: "round-robin" (default), "weighted-round-robin",
 	// "weekly-reset-weighted-round-robin", "fill-first".
 	// "weekly-reset-weighted-round-robin" behaves like "weighted-round-robin" but
-	// raises the available credential whose weekly quota resets soonest, within 36
-	// hours, to the maximum weight (5-hour session-limited credentials count one hour
-	// earlier).
+	// picks only from the first non-empty tier of available credentials: weekly reset
+	// within 36 hours with a 5-hour session limit, weekly reset within 36 hours, 5-hour
+	// session limit, no 5-hour session limit. In the first two tiers the soonest reset
+	// takes every pick.
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
 	// SessionAffinity enables universal session-sticky routing for all clients.
