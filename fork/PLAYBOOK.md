@@ -164,7 +164,7 @@ Backend:
 | `sdk/cliproxy/auth/scheduler.go` | Scheduler keeps `selectorResetBoost(selector)`. Every weighted pick path (single-provider, mixed-provider, websocket) ranks the weight vector before picking, and quota data comes from the newest auth snapshot. **Rule: wherever upstream computes weighted-round-robin weights, the ranking must be applied.** |
 | `sdk/cliproxy/service_config.go` | `weekly-reset-weighted-round-robin` / `weekly-reset-wrr` in the strategy switch, built with `NewWeeklyResetWeightedRoundRobinSelector()`. |
 | `internal/api/handlers/management/config_basic.go` | Same names in `normalizeRoutingStrategy`. |
-| `internal/api/server.go` | `s.mgmt.StartQuotaHistory()` + `defer s.mgmt.StopQuotaHistory()` in `Start()`. |
+| `internal/api/server.go` | `s.mgmt.StartQuotaHistory()` + `defer s.mgmt.StopQuotaHistory()` in `Start()`, before the serve goroutines, so the stored routing hints are loaded before the first request. |
 | `internal/api/server_management_v8.go` | `v8.GET("/quota/history", s.mgmt.GetQuotaHistory)`. |
 | `internal/config/config_types.go`, `config.example.yaml` | Docs for the new strategy only. |
 | `sdk/cliproxy/auth/selector_test.go` | One call site uses the new `pickSmoothWeightedAuth` signature. |
@@ -272,6 +272,10 @@ Older images stay local until pruned, so rolling back the image is instant.
   - Whether an account has the 5-hour limit comes from its unified `5h` headers and
     from the collector's usage polls (`SetSessionLimitHint`). Until one of them has
     seen the account without it, it counts as limited.
+  - On startup, `StartQuotaHistory` republishes the reset and 5-hour hints of the
+    last 48 h of stored samples before the server accepts connections. Without that,
+    requests in the first seconds after a deploy see no quota data and spread evenly,
+    and session affinity keeps them there.
   - An exhausted account keeps its tier on paper, but the proxy benches it after
     its first 429 until the weekly reset (cooldown taken from Anthropic's
     `7d-Reset`), so traffic goes elsewhere.
