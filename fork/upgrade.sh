@@ -50,6 +50,12 @@ NEW_IMAGE_ID=$(docker image inspect -f '{{.Id}}' "$NEW_IMAGE") || die "image $NE
 if [[ -n $UI_FILE ]]; then
   [[ -s $UI_FILE ]] || die "UI file $UI_FILE missing or empty"
   UI_SHA=$(sha256sum "$UI_FILE" | cut -d' ' -f1)
+  # Only a build-release.sh UI may ship: it reports <ui-tag>-akhial.<ui sha>, and that
+  # sha is the release name's last part. A hand-built file carries anything else.
+  UI_COMMIT=${NEW_IMAGE##*.}
+  [[ $UI_COMMIT =~ ^[0-9a-f]{7}$ ]] || die "$NEW_IMAGE does not end in a UI commit; use a build-release.sh release"
+  grep -Eq "v[0-9]+\.[0-9]+\.[0-9]+-akhial\.$UI_COMMIT[^0-9a-zA-Z+._-]" "$UI_FILE" ||
+    die "UI file does not report version <tag>-akhial.$UI_COMMIT; deploy the management.html from build-release.sh"
 fi
 
 MGMT_KEY=$(sed -n 's/^Management key: //p' credentials.txt)
