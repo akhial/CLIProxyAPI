@@ -113,9 +113,12 @@ Allow 30–60 minutes when nothing conflicts.
    `backups/pre-upgrade-<ts>/`. It then swaps the image and UI while the container
    is stopped and health-checks the result: API, image ID, served UI bytes, quota
    history, unchanged routing strategy, collector started. **If any check fails it
-   restores the previous files and container automatically.** For a UI-only
-   change, `sudo install -m 0644 <file> /srv/work/cliproxyapi/static/management.html`
-   is enough; no restart is needed.
+   restores the previous files and container automatically.** A UI-only change
+   takes the same path: commit and push it to the UI's `main`, run
+   `build-release.sh`, deploy with `upgrade.sh`. Never build `management.html` by
+   hand or copy one into `static/`: its version would not follow the
+   `<tag>-akhial.<sha>` convention or match the image. `upgrade.sh` refuses a UI
+   file whose version does not end in the release name's UI commit.
 
 6. **Check it** in the UI (hard refresh): forecast charts render, account rows
    show "Recorded … ago", and both Config → Routing Strategy and the Routing page
