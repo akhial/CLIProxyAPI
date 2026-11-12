@@ -216,6 +216,11 @@ func (h *Handler) APICall(c *gin.Context) {
 	httpClient.Transport = h.apiCallTransport(auth, requestProxyURL)
 
 	resp, errDo := httpClient.Do(req)
+	// A banked-reset claim may have been spent even when the outcome is unknown, so
+	// the saved resets are read again whatever the result.
+	if auth != nil && isClaudeResetClaim(method, parsedURL) {
+		h.InvalidateClaudeResetGrants(auth.ID)
+	}
 	if errDo != nil {
 		log.WithError(errDo).Debug("management APICall request failed")
 		c.JSON(http.StatusBadGateway, gin.H{"error": "request failed"})

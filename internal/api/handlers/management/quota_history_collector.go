@@ -61,12 +61,15 @@ type quotaHistoryAuthState struct {
 	nextPollAt    time.Time
 	plan          string
 	planCheckedAt time.Time
+	// resetGrantsRetryAt delays the next banked-reset read after a failed one.
+	resetGrantsRetryAt time.Time
 }
 
 // quotaHistoryCollector records Claude and Codex OAuth quota samples from passive
 // response headers and, when those are stale, from active usage polls.
 type quotaHistoryCollector struct {
 	store        *quotaHistoryStore
+	resets       *quotaHistoryResetStore
 	pollInterval time.Duration
 	tickInterval time.Duration
 	nowFunc      func() time.Time
@@ -87,6 +90,7 @@ type quotaHistoryCollector struct {
 func newQuotaHistoryCollector(h *Handler, store *quotaHistoryStore, pollInterval time.Duration) *quotaHistoryCollector {
 	return &quotaHistoryCollector{
 		store:        store,
+		resets:       newQuotaHistoryResetStore(store.dir),
 		pollInterval: pollInterval,
 		tickInterval: quotaHistoryTickInterval,
 		nowFunc:      time.Now,
@@ -395,6 +399,10 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 		state.planCheckedAt = now
 		c.refreshClaudePlan(ctx, auth, state)
 	}
+	if provider == "claude" && c.pollInterval > 0 && c.resets != nil &&
+		!now.Before(state.resetGrantsRetryAt) && c.resets.NeedsRead(auth.ID) {
+		c.readResetGrants(ctx, auth, state, now)
+	}
 
 	if c.recordHeaderSample(auth, provider, state) {
 		return
@@ -491,6 +499,56 @@ func (c *quotaHistoryCollector) refreshClaudePlan(ctx context.Context, auth *cor
 	}
 }
 
+// readResetGrants reads and saves the banked resets of a Claude credential. They only
+// change when a reset is spent, so callers read a credential once and again after a
+// claim; a failed read is retried after quotaHistoryResetGrantsRetry.
+func (c *quotaHistoryCollector) readResetGrants(ctx context.Context, auth *coreauth.Auth, state *quotaHistoryAuthState, now time.Time) {
+	errRead := func() error {
+		token, errToken := c.token(ctx, auth)
+		if errToken != nil {
+			return errToken
+		}
+		headers := quotaHistoryClaudeHeaders(token)
+		headers["Accept"] = "application/json"
+		body, errFetch := c.fetch(ctx, auth, quotaHistoryClaudeResetGrantsURL, headers)
+		if errFetch != nil {
+			return errFetch
+		}
+		grants, errParse := parseClaudeResetGrants(body, now)
+		if errParse != nil {
+			return errParse
+		}
+		if errPut := c.resets.Put(auth.ID, grants); errPut != nil {
+			// The record is kept in memory, so the next tick does not read it again.
+			c.logEntry(auth, "claude").WithError(errPut).Warn("quota history: failed to save reset grants")
+		}
+		return nil
+	}()
+	if errRead == nil {
+		state.resetGrantsRetryAt = time.Time{}
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	firstFailure := state.resetGrantsRetryAt.IsZero()
+	state.resetGrantsRetryAt = now.Add(quotaHistoryResetGrantsRetry)
+	entry := c.logEntry(auth, "claude").WithError(errRead).WithField("retry_in", quotaHistoryResetGrantsRetry.String())
+	if firstFailure {
+		entry.Warn("quota history: reset grant read failed")
+		return
+	}
+	entry.Debug("quota history: reset grant read failed")
+}
+
+// InvalidateClaudeResetGrants marks the saved banked resets of authID out of date, so
+// the collector reads them again on its next tick.
+func (h *Handler) InvalidateClaudeResetGrants(authID string) {
+	if collector := quotaHistoryCollectorFor(h); collector != nil && collector.resets != nil && authID != "" {
+		collector.resets.Invalidate(authID)
+	}
+}
+
 func (c *quotaHistoryCollector) token(ctx context.Context, auth *coreauth.Auth) (string, error) {
 	token, errToken := c.resolveToken(ctx, auth)
 	if errToken != nil {
@@ -581,6 +639,7 @@ func publishQuotaHistoryRoutingHints(authID string, at time.Time, windows []quot
 	if weekly == nil {
 		return
 	}
+
 	if weekly.ResetAt > 0 {
 		coreauth.SetWeeklyQuotaHint(authID, coreauth.WeeklyQuota{
 			ResetAt:     time.UnixMilli(weekly.ResetAt),

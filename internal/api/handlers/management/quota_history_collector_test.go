@@ -80,9 +80,10 @@ func newTestQuotaHistoryCollector(t *testing.T, pollInterval time.Duration, auth
 	t.Helper()
 	clock := &fakeQuotaHistoryClock{now: time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)}
 	doer := &fakeQuotaHistoryDoer{responses: map[string]fakeQuotaHistoryResponse{
-		quotaHistoryClaudeUsageURL:   {status: http.StatusOK, body: testClaudeUsageBody},
-		quotaHistoryClaudeProfileURL: {status: http.StatusOK, body: testClaudeProfileBody},
-		quotaHistoryCodexUsageURL:    {status: http.StatusOK, body: testCodexUsageBody},
+		quotaHistoryClaudeUsageURL:       {status: http.StatusOK, body: testClaudeUsageBody},
+		quotaHistoryClaudeProfileURL:     {status: http.StatusOK, body: testClaudeProfileBody},
+		quotaHistoryCodexUsageURL:        {status: http.StatusOK, body: testCodexUsageBody},
+		quotaHistoryClaudeResetGrantsURL: {status: http.StatusOK, body: testClaudeResetGrantsBody},
 	}}
 	// A nil handler still resolves Claude/Codex tokens from metadata, like APICall.
 	collector := newQuotaHistoryCollector(nil, newQuotaHistoryStore(t.TempDir()), pollInterval)
@@ -186,8 +187,9 @@ func TestQuotaHistoryCollector_PollSchedule(t *testing.T) {
 
 	clock.Advance(5 * time.Minute)
 	collector.tick(ctx)
-	if got := doer.total(); got != 3 {
-		t.Fatalf("requests after 5 minutes = %d, want 3 (no new polls)", got)
+	// Profile, reset grants, Claude usage and Codex usage from the first tick.
+	if got := doer.total(); got != 4 {
+		t.Fatalf("requests after 5 minutes = %d, want 4 (no new polls)", got)
 	}
 
 	clock.Advance(5 * time.Minute)
@@ -203,6 +205,9 @@ func TestQuotaHistoryCollector_PollSchedule(t *testing.T) {
 	collector.tick(ctx)
 	if got := len(doer.requestsTo(quotaHistoryClaudeProfileURL)); got != 2 {
 		t.Fatalf("claude profile requests after a day = %d, want 2", got)
+	}
+	if got := len(doer.requestsTo(quotaHistoryClaudeResetGrantsURL)); got != 1 {
+		t.Fatalf("reset grant reads after a day = %d, want 1 (read once)", got)
 	}
 }
 

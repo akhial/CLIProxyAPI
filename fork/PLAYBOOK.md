@@ -255,6 +255,12 @@ Older images stay local until pruned, so rolling back the image is instant.
 - `management.disable-auto-update-panel: true` must stay set. Otherwise the
   backend downloads the official UI over the fork UI every few hours.
 - Quota history lives in `config/quota-history/` (root-owned, 35-day retention).
+  `reset-grants.json` there holds each Claude account's banked resets (the
+  `cedar_ember` block of `/api/oauth/usage`). The collector reads an account once,
+  and again on the next tick after a reset claim (`POST …/reset_rate_limits`) passes
+  through the management `api-call` endpoint; a failed read retries after 30 min.
+  `GET /v8/management/quota/history` returns it per account as `reset_grants`
+  (`stale` between a claim and the re-read). Delete the file to force a re-read.
   Env knobs: `QUOTA_HISTORY_DISABLE`, `QUOTA_HISTORY_DIR`,
   `QUOTA_HISTORY_POLL_INTERVAL` (default `10m`; `0` = header-only).
 - **Weekly-reset routing behaviour** (earliest effective deadline first; chosen by
