@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"strings"
 	"time"
 )
@@ -112,27 +113,94 @@ func (b *weeklyResetBoost) applyFableTarget(weights map[string]int64, auths []*A
 	if target == nil {
 		return false
 	}
+	for authID := range b.fableExcluded(target, weights, model, now) {
+		delete(weights, authID)
+	}
+	return isFableModel(model)
+}
+
+// fableExcluded returns the candidates in weights that a request for model keeps off
+// given the Fable target; see applyFableTarget.
+func (b *weeklyResetBoost) fableExcluded(target *Auth, weights map[string]int64, model string, now time.Time) map[string]struct{} {
+	excluded := make(map[string]struct{})
 	if isFableModel(model) {
 		for authID := range weights {
 			if authID != target.ID {
-				delete(weights, authID)
+				excluded[authID] = struct{}{}
 			}
 		}
-		return true
+		return excluded
 	}
 	used, _, _ := b.weeklyUsedAndReset(target, now)
-	fableRoom := (100 - b.fableUsed(target, now)) / 2
-	if used+fableRoom < 100 {
-		return false
+	if used+(100-b.fableUsed(target, now))/2 < 100 {
+		return excluded
 	}
-	others := 0
 	for authID, weight := range weights {
 		if authID != target.ID && weight > 0 {
-			others++
+			excluded[target.ID] = struct{}{}
+			break
 		}
 	}
-	if others > 0 {
-		delete(weights, target.ID)
+	return excluded
+}
+
+// fableTargetAppliedKey marks a context whose candidates the Fable target already
+// narrowed, so the fallback selector does not narrow them a second time.
+type fableTargetAppliedKey struct{}
+
+// withoutFableExcluded drops the credentials the Fable target keeps this request off,
+// so a session bound to one of them is rebound instead of reused. The returned context
+// tells the fallback selector the target has been applied; recomputing it over the
+// narrowed candidates could pick a second target and exclude that one too.
+func withoutFableExcluded(ctx context.Context, fallback Selector, provider, model string, auths []*Auth) (context.Context, []*Auth) {
+	boost := selectorResetBoost(fallback)
+	if boost == nil || !boost.fableResetTarget {
+		return ctx, auths
 	}
-	return false
+	// The target comes from the highest priority tier, as the fallback picks it. A Fable
+	// request keeps off every other tier too, so a session bound to a lower tier while
+	// the target was unavailable moves back to it.
+	available, errAvailable := getSelectorAvailableAuthsAcrossPriorities(ctx, positiveWeightAuths(auths), provider, model, time.Now())
+	if errAvailable != nil || len(available) == 0 {
+		return ctx, auths
+	}
+	ctx = context.WithValue(ctx, fableTargetAppliedKey{}, true)
+	now := boost.clock()
+	highest := highestPriorityAuths(available)
+	target := boost.fableTarget(authWeightVector(highest), highest, now)
+	if target == nil {
+		return ctx, auths
+	}
+	scope := highest
+	if isFableModel(model) {
+		scope = available
+	}
+	excluded := boost.fableExcluded(target, authWeightVector(scope), model, now)
+	if len(excluded) == 0 {
+		return ctx, auths
+	}
+	kept := make([]*Auth, 0, len(auths))
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		if _, drop := excluded[auth.ID]; !drop {
+			kept = append(kept, auth)
+		}
+	}
+	return ctx, kept
+}
+
+// withoutAppliedFableTarget returns boost, or a copy without the Fable target when ctx
+// says the target was already applied to the candidates.
+func withoutAppliedFableTarget(ctx context.Context, boost *weeklyResetBoost) *weeklyResetBoost {
+	if boost == nil || !boost.fableResetTarget {
+		return boost
+	}
+	if applied, _ := ctx.Value(fableTargetAppliedKey{}).(bool); !applied {
+		return boost
+	}
+	copied := *boost
+	copied.fableResetTarget = false
+	return &copied
 }

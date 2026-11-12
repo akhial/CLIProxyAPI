@@ -302,6 +302,10 @@ Older images stay local until pruned, so rolling back the image is instant.
     from the poller, `SetFableUsageHint`), the one whose weekly reset is last. A
     request whose model contains `fable` goes to it alone. Other models skip it
     once weekly used + (100 − Fable used)/2 ≥ 100, unless it is the only candidate.
+    This outranks session affinity: a session bound to an account it keeps the
+    request off is rebound (except with `session-affinity-rebind-on: never`).
+    Claude headers have no Fable window, so the collector polls Claude usage every
+    interval even while header samples arrive.
     When its Fable is used up, the next account becomes the target and the UI's ⚡
     lights up; a claim through `api-call` clears the hint until the re-read.
     Chosen by simulation: it claims about two more resets per

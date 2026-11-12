@@ -63,6 +63,9 @@ type quotaHistoryAuthState struct {
 	planCheckedAt time.Time
 	// resetGrantsRetryAt delays the next banked-reset read after a failed one.
 	resetGrantsRetryAt time.Time
+	// lastPoll is the last usage poll. Claude headers carry no Fable window, so Claude
+	// is polled every interval even while header samples keep arriving.
+	lastPoll time.Time
 }
 
 // quotaHistoryCollector records Claude and Codex OAuth quota samples from passive
@@ -415,7 +418,11 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 	if c.pollInterval <= 0 || now.Before(state.nextPollAt) {
 		return
 	}
-	if !state.lastSample.IsZero() && now.Sub(state.lastSample) < c.pollInterval {
+	lastSample := state.lastSample
+	if provider == "claude" {
+		lastSample = state.lastPoll
+	}
+	if !lastSample.IsZero() && now.Sub(lastSample) < c.pollInterval {
 		return
 	}
 	if errPoll := c.poll(ctx, auth, provider, state, now); errPoll != nil {
@@ -480,6 +487,7 @@ func (c *quotaHistoryCollector) poll(ctx context.Context, auth *coreauth.Auth, p
 		return errors.New("usage response contained no quota windows")
 	}
 	c.record(auth, provider, state, now, quotaHistorySourcePoll, windows)
+	state.lastPoll = now
 	state.failures = 0
 	state.nextPollAt = time.Time{}
 	return nil
