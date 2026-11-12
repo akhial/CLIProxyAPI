@@ -163,9 +163,9 @@ Backend:
 
 | File | Fork change |
 |---|---|
-| `sdk/cliproxy/auth/selector.go` | `WeightedRoundRobinSelector.resetBoost` field. `Pick` calls `s.resetBoost.rankAuthWeights(weights, available)` before picking. `pickSmoothWeightedAuth` takes the effective `weights`. |
+| `sdk/cliproxy/auth/selector.go` | `WeightedRoundRobinSelector.resetBoost` field. `Pick` calls `s.resetBoost.rankAuthWeights(weights, available, model)` before picking. `pickSmoothWeightedAuth` takes the effective `weights`. |
 | `sdk/cliproxy/auth/scheduler.go` | Scheduler keeps `selectorResetBoost(selector)`. Every weighted pick path (single-provider, mixed-provider, websocket) ranks the weight vector before picking, and quota data comes from the newest auth snapshot. **Rule: wherever upstream computes weighted-round-robin weights, the ranking must be applied.** |
-| `sdk/cliproxy/service_config.go` | `weekly-reset-weighted-round-robin` / `weekly-reset-wrr` in the strategy switch, built with `NewWeeklyResetWeightedRoundRobinSelector()`. |
+| `sdk/cliproxy/service_config.go` | `weekly-reset-weighted-round-robin` / `weekly-reset-wrr` in the strategy switch, built with `NewWeeklyResetWeightedRoundRobinSelector()`, or `NewFableResetWeightedRoundRobinSelector()` with `routing.fable-reset-target: true` (`routingRuntimeState.fableResetTarget`). |
 | `internal/api/handlers/management/config_basic.go` | Same names in `normalizeRoutingStrategy`. |
 | `internal/api/server.go` | `s.mgmt.StartQuotaHistory()` + `defer s.mgmt.StopQuotaHistory()` in `Start()`, before the serve goroutines, so the stored routing hints are loaded before the first request. |
 | `internal/api/server_management_v8.go` | `v8.GET("/quota/history", s.mgmt.GetQuotaHistory)`. |
@@ -255,6 +255,12 @@ Older images stay local until pruned, so rolling back the image is instant.
 - `management.disable-auto-update-panel: true` must stay set. Otherwise the
   backend downloads the official UI over the fork UI every few hours.
 - Quota history lives in `config/quota-history/` (root-owned, 35-day retention).
+  `reset-grants.json` there holds each Claude account's banked resets (the
+  `cedar_ember` block of `/api/oauth/usage`). The collector reads an account once,
+  and again on the next tick after a reset claim (`POST …/reset_rate_limits`) passes
+  through the management `api-call` endpoint; a failed read retries after 30 min.
+  `GET /v8/management/quota/history` returns it per account as `reset_grants`
+  (`stale` between a claim and the re-read). Delete the file to force a re-read.
   Env knobs: `QUOTA_HISTORY_DISABLE`, `QUOTA_HISTORY_DIR`,
   `QUOTA_HISTORY_POLL_INTERVAL` (default `10m`; `0` = header-only).
 - **Weekly-reset routing behaviour** (earliest effective deadline first; chosen by
@@ -290,6 +296,20 @@ Older images stay local until pruned, so rolling back the image is instant.
     account).
   - A manual reset (Claude banked reset, Codex manual reset) moves the reset time;
     the ranking corrects on the next response or poll, within ≤10 min.
+  - `routing.fable-reset-target: true` (off by default; `fable_reset_target.go`)
+    adds a Fable target: among the candidates with a usable Fable reset
+    (`reset-grants.json`, `SetFableResetHint`) and Fable left (`seven_day_fable`
+    from the poller, `SetFableUsageHint`), the one whose weekly reset is last. A
+    request whose model contains `fable` goes to it alone. Other models skip it
+    once weekly used + (100 − Fable used)/2 ≥ 100, unless it is the only candidate.
+    This outranks session affinity: a session bound to an account it keeps the
+    request off is rebound (except with `session-affinity-rebind-on: never`).
+    Claude headers have no Fable window, so the collector polls Claude usage every
+    interval even while header samples arrive.
+    When its Fable is used up, the next account becomes the target and the UI's ⚡
+    lights up; a claim through `api-call` clears the hint until the re-read.
+    Chosen by simulation: it claims about two more resets per
+    heavy week than plain weekly-reset routing.
 - Upstream's `sdk/cliproxy` tests `TestHandleAuthUpdates_SameRevisionWait…`,
   `TestEndToEndAuthFileReplacement…` and `TestServiceHeartbeatFailover…` are
   timing-sensitive and flake on unmodified upstream too; `verify.sh` retries that

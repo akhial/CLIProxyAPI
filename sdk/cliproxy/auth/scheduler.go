@@ -425,7 +425,7 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
-	if picked := shard.pickReadyLocked(preferWebsocket, strategy, predicate, s.scheduledWeightFuncLocked(strategy)); picked != nil {
+	if picked := shard.pickReadyLocked(preferWebsocket, strategy, predicate, s.scheduledWeightFuncLocked(strategy, model)); picked != nil {
 		return picked, nil
 	}
 	return nil, shard.unavailableErrorLocked(provider, model, predicate)
@@ -486,7 +486,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		}
 		shard := providerState.ensureModelLocked(modelKey, time.Now())
 		predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
-		if picked := shard.pickReadyLocked(false, strategy, predicate, s.scheduledWeightFuncLocked(strategy)); picked != nil {
+		if picked := shard.pickReadyLocked(false, strategy, predicate, s.scheduledWeightFuncLocked(strategy, model)); picked != nil {
 			return picked, providerKey, nil
 		}
 		return nil, "", shard.unavailableErrorLocked("mixed", model, predicate)
@@ -563,7 +563,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 			state = &smoothWeightedState{}
 			s.mixedWeightedStates[cursorKey] = state
 		}
-		weights := scheduledWeightVectorMatching(entries, predicate, s.scheduledWeightFuncLocked(strategy))
+		weights := scheduledWeightVectorMatching(entries, predicate, s.scheduledWeightFuncLocked(strategy, model))
 		state.prepare(weights)
 		picked := pickSmoothWeightedScheduled(entries, state.current, weights)
 		if picked != nil && picked.meta != nil {

@@ -36,6 +36,8 @@ type quotaHistoryAccount struct {
 	Plan      string                     `json:"plan"`
 	Windows   []quotaHistoryWindowSeries `json:"windows"`
 	Routing   *quotaHistoryRouting       `json:"routing,omitempty"`
+	// ResetGrants is the saved banked-reset state of a Claude account; absent until read.
+	ResetGrants *quotaHistoryResetGrants `json:"reset_grants,omitempty"`
 }
 
 // quotaHistoryRouting is where the weekly-reset routing strategy places a credential
@@ -48,6 +50,13 @@ type quotaHistoryRouting struct {
 	SessionShare float64 `json:"session_share,omitempty"`
 	// Drain is the weekly %/h the pool's daily traffic would spend if it all went here.
 	Drain float64 `json:"drain,omitempty"`
+}
+
+// quotaHistoryResetGrants is a saved banked-reset record. Stale is true between a claim
+// and the read that follows it.
+type quotaHistoryResetGrants struct {
+	claudeResetGrants
+	Stale bool `json:"stale"`
 }
 
 type quotaHistoryWindowSeries struct {
@@ -124,6 +133,7 @@ func (h *Handler) GetQuotaHistory(c *gin.Context) {
 	response.PollIntervalSeconds = int64(collector.pollInterval / time.Second)
 	response.Accounts = buildQuotaHistoryAccounts(samples)
 	addQuotaHistoryRouting(response.Accounts, h.quotaHistoryAuths(), now)
+	addQuotaHistoryResetGrants(response.Accounts, collector.resets)
 	c.JSON(http.StatusOK, response)
 }
 
@@ -150,6 +160,18 @@ func addQuotaHistoryRouting(accounts []quotaHistoryAccount, auths []*coreauth.Au
 			routing.Drain = math.Round(stats.DrainPercentPerHour*100) / 100
 		}
 		accounts[index].Routing = routing
+	}
+}
+
+// addQuotaHistoryResetGrants fills each account's saved banked resets.
+func addQuotaHistoryResetGrants(accounts []quotaHistoryAccount, resets *quotaHistoryResetStore) {
+	if resets == nil {
+		return
+	}
+	for index := range accounts {
+		if record, ok, stale := resets.Get(accounts[index].AuthID); ok {
+			accounts[index].ResetGrants = &quotaHistoryResetGrants{claudeResetGrants: record, Stale: stale}
+		}
 	}
 }
 

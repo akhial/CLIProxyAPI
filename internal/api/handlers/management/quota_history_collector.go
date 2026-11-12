@@ -61,12 +61,18 @@ type quotaHistoryAuthState struct {
 	nextPollAt    time.Time
 	plan          string
 	planCheckedAt time.Time
+	// resetGrantsRetryAt delays the next banked-reset read after a failed one.
+	resetGrantsRetryAt time.Time
+	// lastPoll is the last usage poll. Claude headers carry no Fable window, so Claude
+	// is polled every interval even while header samples keep arriving.
+	lastPoll time.Time
 }
 
 // quotaHistoryCollector records Claude and Codex OAuth quota samples from passive
 // response headers and, when those are stale, from active usage polls.
 type quotaHistoryCollector struct {
 	store        *quotaHistoryStore
+	resets       *quotaHistoryResetStore
 	pollInterval time.Duration
 	tickInterval time.Duration
 	nowFunc      func() time.Time
@@ -87,6 +93,7 @@ type quotaHistoryCollector struct {
 func newQuotaHistoryCollector(h *Handler, store *quotaHistoryStore, pollInterval time.Duration) *quotaHistoryCollector {
 	return &quotaHistoryCollector{
 		store:        store,
+		resets:       newQuotaHistoryResetStore(store.dir),
 		pollInterval: pollInterval,
 		tickInterval: quotaHistoryTickInterval,
 		nowFunc:      time.Now,
@@ -395,6 +402,15 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 		state.planCheckedAt = now
 		c.refreshClaudePlan(ctx, auth, state)
 	}
+	if provider == "claude" && c.pollInterval > 0 && c.resets != nil &&
+		!now.Before(state.resetGrantsRetryAt) && c.resets.NeedsRead(auth.ID) {
+		c.readResetGrants(ctx, auth, state, now)
+	}
+	if provider == "claude" && c.resets != nil {
+		if record, ok, stale := c.resets.Get(auth.ID); ok && !stale {
+			coreauth.SetFableResetHint(auth.ID, hasUsableFableReset(record, now), now)
+		}
+	}
 
 	if c.recordHeaderSample(auth, provider, state) {
 		return
@@ -402,7 +418,11 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 	if c.pollInterval <= 0 || now.Before(state.nextPollAt) {
 		return
 	}
-	if !state.lastSample.IsZero() && now.Sub(state.lastSample) < c.pollInterval {
+	lastSample := state.lastSample
+	if provider == "claude" {
+		lastSample = state.lastPoll
+	}
+	if !lastSample.IsZero() && now.Sub(lastSample) < c.pollInterval {
 		return
 	}
 	if errPoll := c.poll(ctx, auth, provider, state, now); errPoll != nil {
@@ -467,6 +487,7 @@ func (c *quotaHistoryCollector) poll(ctx context.Context, auth *coreauth.Auth, p
 		return errors.New("usage response contained no quota windows")
 	}
 	c.record(auth, provider, state, now, quotaHistorySourcePoll, windows)
+	state.lastPoll = now
 	state.failures = 0
 	state.nextPollAt = time.Time{}
 	return nil
@@ -488,6 +509,60 @@ func (c *quotaHistoryCollector) refreshClaudePlan(ctx context.Context, auth *cor
 	}
 	if plan := parseClaudeProfilePlan(body); plan != "" {
 		state.plan = plan
+	}
+}
+
+// readResetGrants reads and saves the banked resets of a Claude credential. They only
+// change when a reset is spent, so callers read a credential once and again after a
+// claim; a failed read is retried after quotaHistoryResetGrantsRetry.
+func (c *quotaHistoryCollector) readResetGrants(ctx context.Context, auth *coreauth.Auth, state *quotaHistoryAuthState, now time.Time) {
+	claims := c.resets.Claims(auth.ID)
+	errRead := func() error {
+		token, errToken := c.token(ctx, auth)
+		if errToken != nil {
+			return errToken
+		}
+		headers := quotaHistoryClaudeHeaders(token)
+		headers["Accept"] = "application/json"
+		body, errFetch := c.fetch(ctx, auth, quotaHistoryClaudeResetGrantsURL, headers)
+		if errFetch != nil {
+			return errFetch
+		}
+		grants, errParse := parseClaudeResetGrants(body, now)
+		if errParse != nil {
+			return errParse
+		}
+		if errPut := c.resets.Put(auth.ID, grants, claims); errPut != nil {
+			// The record is kept in memory, so the next tick does not read it again.
+			c.logEntry(auth, "claude").WithError(errPut).Warn("quota history: failed to save reset grants")
+		}
+		return nil
+	}()
+	if errRead == nil {
+		state.resetGrantsRetryAt = time.Time{}
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	firstFailure := state.resetGrantsRetryAt.IsZero()
+	state.resetGrantsRetryAt = now.Add(quotaHistoryResetGrantsRetry)
+	entry := c.logEntry(auth, "claude").WithError(errRead).WithField("retry_in", quotaHistoryResetGrantsRetry.String())
+	if firstFailure {
+		entry.Warn("quota history: reset grant read failed")
+		return
+	}
+	entry.Debug("quota history: reset grant read failed")
+}
+
+// InvalidateClaudeResetGrants marks the saved banked resets of authID out of date, so
+// the collector reads them again on its next tick.
+func (h *Handler) InvalidateClaudeResetGrants(authID string) {
+	if collector := quotaHistoryCollectorFor(h); collector != nil && collector.resets != nil && authID != "" {
+		collector.resets.Invalidate(authID)
+		// Until the grants are read again, the Fable target must not wait on a reset
+		// that was probably just spent.
+		coreauth.SetFableResetHint(authID, false, collector.nowFunc())
 	}
 }
 
@@ -569,17 +644,26 @@ func (c *quotaHistoryCollector) record(auth *coreauth.Auth, provider string, sta
 // with the weekly-reset routing strategy, which cannot read quota history itself.
 // Only samples with a weekly window speak for the plan's windows.
 func publishQuotaHistoryRoutingHints(authID string, at time.Time, windows []quotaHistoryWindow) {
-	var weekly, session *quotaHistoryWindow
+	var weekly, session, fable *quotaHistoryWindow
 	for index := range windows {
 		switch windows[index].ID {
 		case quotaHistoryWindowSevenDay:
 			weekly = &windows[index]
 		case quotaHistoryWindowFiveHour:
 			session = &windows[index]
+		case quotaHistoryWindowFable:
+			fable = &windows[index]
 		}
 	}
 	if weekly == nil {
 		return
+	}
+	if fable != nil {
+		usage := coreauth.FableUsage{UsedPercent: fable.Used}
+		if fable.ResetAt > 0 {
+			usage.ResetAt = time.UnixMilli(fable.ResetAt)
+		}
+		coreauth.SetFableUsageHint(authID, usage, at)
 	}
 	if weekly.ResetAt > 0 {
 		coreauth.SetWeeklyQuotaHint(authID, coreauth.WeeklyQuota{

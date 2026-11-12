@@ -539,6 +539,14 @@ type RoutingConfig struct {
 	// pool's daily traffic. Session-limited credentials win near-ties (within an hour).
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
+	// FableResetTarget, with the "weekly-reset-weighted-round-robin" strategy, sends
+	// Fable requests to one credential with an unused Fable reset (the one whose weekly
+	// limit resets last) until its Fable limit is used up, so the reset can be claimed
+	// early in its week. Other models keep off the weekly room its remaining Fable needs.
+	// It needs the quota history poller, which reads Fable usage and banked resets.
+	// Default: false.
+	FableResetTarget bool `yaml:"fable-reset-target,omitempty" json:"fable-reset-target,omitempty"`
+
 	// SessionAffinity enables universal session-sticky routing for all clients.
 	// Explicit Claude Code, Codex, OpenCode, and pi session headers are preferred,
 	// followed by prompt_cache_key, Responses conversation IDs, legacy body IDs,
