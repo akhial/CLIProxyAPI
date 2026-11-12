@@ -80,9 +80,10 @@ func newTestQuotaHistoryCollector(t *testing.T, pollInterval time.Duration, auth
 	t.Helper()
 	clock := &fakeQuotaHistoryClock{now: time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)}
 	doer := &fakeQuotaHistoryDoer{responses: map[string]fakeQuotaHistoryResponse{
-		quotaHistoryClaudeUsageURL:   {status: http.StatusOK, body: testClaudeUsageBody},
-		quotaHistoryClaudeProfileURL: {status: http.StatusOK, body: testClaudeProfileBody},
-		quotaHistoryCodexUsageURL:    {status: http.StatusOK, body: testCodexUsageBody},
+		quotaHistoryClaudeUsageURL:       {status: http.StatusOK, body: testClaudeUsageBody},
+		quotaHistoryClaudeProfileURL:     {status: http.StatusOK, body: testClaudeProfileBody},
+		quotaHistoryCodexUsageURL:        {status: http.StatusOK, body: testCodexUsageBody},
+		quotaHistoryClaudeResetGrantsURL: {status: http.StatusOK, body: testClaudeResetGrantsBody},
 	}}
 	// A nil handler still resolves Claude/Codex tokens from metadata, like APICall.
 	collector := newQuotaHistoryCollector(nil, newQuotaHistoryStore(t.TempDir()), pollInterval)
@@ -186,8 +187,9 @@ func TestQuotaHistoryCollector_PollSchedule(t *testing.T) {
 
 	clock.Advance(5 * time.Minute)
 	collector.tick(ctx)
-	if got := doer.total(); got != 3 {
-		t.Fatalf("requests after 5 minutes = %d, want 3 (no new polls)", got)
+	// Profile, reset grants, Claude usage and Codex usage from the first tick.
+	if got := doer.total(); got != 4 {
+		t.Fatalf("requests after 5 minutes = %d, want 4 (no new polls)", got)
 	}
 
 	clock.Advance(5 * time.Minute)
@@ -203,6 +205,9 @@ func TestQuotaHistoryCollector_PollSchedule(t *testing.T) {
 	collector.tick(ctx)
 	if got := len(doer.requestsTo(quotaHistoryClaudeProfileURL)); got != 2 {
 		t.Fatalf("claude profile requests after a day = %d, want 2", got)
+	}
+	if got := len(doer.requestsTo(quotaHistoryClaudeResetGrantsURL)); got != 1 {
+		t.Fatalf("reset grant reads after a day = %d, want 1 (read once)", got)
 	}
 }
 
@@ -544,5 +549,26 @@ func TestHandlerQuotaHistoryDoUsesConfigSnapshot(t *testing.T) {
 	wg.Wait()
 	if errDo != nil || status != http.StatusOK || string(body) != `{"ok":true}` {
 		t.Fatalf("status=%d body=%s err=%v", status, body, errDo)
+	}
+}
+
+// Claude headers carry no Fable window, so Claude is polled every interval even while
+// fresh header samples keep arriving.
+func TestQuotaHistoryCollector_ClaudePollsDespiteHeaderTraffic(t *testing.T) {
+	auth := testQuotaHistoryClaudeAuth()
+	collector, clock, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, auth)
+	ctx := context.Background()
+	for step := 0; step < 30; step++ {
+		auth.Quota.ObservedAt = clock.Now()
+		auth.Quota.Signals = map[string]string{
+			"Anthropic-Ratelimit-Unified-7d-Utilization": "0.4",
+			"Anthropic-Ratelimit-Unified-7d-Reset":       "1762000000",
+		}
+		collector.tick(ctx)
+		clock.Advance(time.Minute)
+	}
+	// One poll on the first tick without a header sample, then one per 10 minutes.
+	if got := len(doer.requestsTo(quotaHistoryClaudeUsageURL)); got < 2 {
+		t.Fatalf("claude usage polls in 30 min of header traffic = %d, want at least 2", got)
 	}
 }

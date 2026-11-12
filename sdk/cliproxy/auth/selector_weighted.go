@@ -134,7 +134,7 @@ func (s *WeightedRoundRobinSelector) reserveForRequest(ctx context.Context, prov
 	}
 	priority := inferredWeightedPoolPriority(available)
 	key := provider + ":" + canonicalModelLookupKey(weightedSelectorStateModel(ctx, model))
-	picked, pending := s.reserveWeeklyResetScoped(key, priority, transportClass, available, authID)
+	picked, pending := s.reserveWeeklyResetScoped(ctx, model, key, priority, transportClass, available, authID)
 	if picked == nil {
 		return nil, nil, &Error{Code: "auth_unavailable", Message: "no auth available with positive weight"}
 	}

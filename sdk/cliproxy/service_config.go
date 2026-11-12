@@ -57,6 +57,7 @@ type configCommit struct {
 
 type routingRuntimeState struct {
 	strategy                 string
+	fableResetTarget         bool
 	sessionAffinity          bool
 	sessionAffinityTTL       time.Duration
 	sessionAffinitySubagents bool
@@ -82,6 +83,7 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	case "fill-first", "fillfirst", "ff":
 		state.strategy = "fill-first"
 	}
+	state.fableResetTarget = cfg.Routing.FableResetTarget && state.strategy == "weekly-reset-weighted-round-robin"
 	state.sessionAffinity = cfg.Routing.SessionAffinity
 	if ttl := strings.TrimSpace(cfg.Routing.SessionAffinityTTL); ttl != "" {
 		if parsed, errParse := time.ParseDuration(ttl); errParse == nil && parsed > 0 {
@@ -115,7 +117,11 @@ func newRoutingSelectorWithExisting(state routingRuntimeState, existing coreauth
 	case "weighted-round-robin":
 		selector = coreauth.ReuseWeightedRoundRobinSelector(existing, &coreauth.WeightedRoundRobinSelector{})
 	case "weekly-reset-weighted-round-robin":
-		selector = coreauth.ReuseWeightedRoundRobinSelector(existing, coreauth.NewWeeklyResetWeightedRoundRobinSelector())
+		want := coreauth.NewWeeklyResetWeightedRoundRobinSelector()
+		if state.fableResetTarget {
+			want = coreauth.NewFableResetWeightedRoundRobinSelector()
+		}
+		selector = coreauth.ReuseWeightedRoundRobinSelector(existing, want)
 	case "fill-first":
 		selector = &coreauth.FillFirstSelector{}
 	default:

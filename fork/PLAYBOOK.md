@@ -58,7 +58,8 @@ Its `README.md` records the running version and the latest backup.
   images. GitHub Actions are currently not enabled on either fork, so there is no
   CI: `fork/verify.sh` is the gate.
 - Follow each repo's `AGENTS.md` (backend: gofmt, no `/v0/management` changes, no
-  standalone `internal/translator/` changes; UI: all seven locales, `bun run verify`).
+  standalone `internal/translator/` changes, `github.com/MoeForge/moego/{json,regexp,base64}`
+  instead of the standard packages since v8.0.74; UI: all seven locales, `bun run verify`).
 - **Never delete, skip or weaken tests**, with one exception: an upstream test that
   only pins an artificial UI delay or animation timing (for example a minimum
   splash time) that contradicts fork behaviour. Keep the fork's behaviour and remove
@@ -163,14 +164,14 @@ Backend:
 
 | File | Fork change |
 |---|---|
-| `sdk/cliproxy/auth/selector.go` | `WeightedRoundRobinSelector.resetBoost` field. `Pick` calls `s.resetBoost.rankAuthWeights(weights, available)` before picking. `pickSmoothWeightedAuth` takes the effective `weights`. |
-| `sdk/cliproxy/auth/scheduler.go` | Scheduler keeps `selectorResetBoost(selector)`. Every weighted pick path (single-provider, mixed-provider, websocket) ranks the weight vector before picking, and quota data comes from the newest auth snapshot. **Rule: wherever upstream computes weighted-round-robin weights, the ranking must be applied.** |
-| `sdk/cliproxy/service_config.go` | `weekly-reset-weighted-round-robin` / `weekly-reset-wrr` in the strategy switch, built with `NewWeeklyResetWeightedRoundRobinSelector()`. |
+| `sdk/cliproxy/auth/selector.go` | `WeightedRoundRobinSelector.resetBoost` field. `SessionAffinitySelector.Pick` calls `withoutFableExcluded` right after setting its metadata (unless `rebind-on: never`). |
+| `sdk/cliproxy/auth/selector_weighted.go` | `reserveForRequest` (bare selector and session affinity, since v8.0.62) calls `s.reserveWeeklyResetScoped(ctx, model, …)` instead of `reserveScoped`: unbound picks are ranked with the route model, bound and pinned picks keep configured weights. |
+| `sdk/cliproxy/auth/scheduler_weighted.go`, `scheduler.go` | `pickWeightedPoolLocked` takes the request `model` (both call sites in `scheduler.go` pass it) and runs `s.weeklyResetPoolLocked(model, …)` on unpinned pools; quota data comes from the newest auth snapshot. **Rule: wherever upstream reserves weighted-round-robin credit, the ranking must be applied.** The helpers live in `weekly_reset_boost.go`. |
+| `sdk/cliproxy/service_config.go` | `weekly-reset-weighted-round-robin` / `weekly-reset-wrr` in the strategy switch, built with `NewWeeklyResetWeightedRoundRobinSelector()`, or `NewFableResetWeightedRoundRobinSelector()` with `routing.fable-reset-target: true` (`routingRuntimeState.fableResetTarget`). Both weighted strategies go through `ReuseWeightedRoundRobinSelector`, which keeps upstream's reuse of the existing selector on reloads only when it ranks the same way (so switching back to `weighted-round-robin` drops the ranking). |
 | `internal/api/handlers/management/config_basic.go` | Same names in `normalizeRoutingStrategy`. |
 | `internal/api/server.go` | `s.mgmt.StartQuotaHistory()` + `defer s.mgmt.StopQuotaHistory()` in `Start()`, before the serve goroutines, so the stored routing hints are loaded before the first request. |
 | `internal/api/server_management_v8.go` | `v8.GET("/quota/history", s.mgmt.GetQuotaHistory)`. |
 | `internal/config/config_types.go`, `config.example.yaml` | Docs for the new strategy only. |
-| `sdk/cliproxy/auth/selector_test.go` | One call site uses the new `pickSmoothWeightedAuth` signature. |
 | `sdk/api/handlers/openai/openai_handlers.go` | In `OpenAIModels`, the Codex-client branch passes the response through `filterCodexClientModelsByProvider` when `?provider=` is set. |
 | `sdk/api/handlers/openai/codex_client_models.go`, `…_test.go` | `filterCodexClientModelsByProvider` and `TestOpenAIModelsProviderCatalog`. |
 
@@ -178,7 +179,8 @@ UI:
 
 | File | Fork change |
 |---|---|
-| `src/features/quota/QuotaPage.tsx` | Forecast section under the tabs, `useForecastPrefs`, history shared with `AccountsTable` (which replaced the card grid), plugin tab hidden when empty, masked names. |
+| `src/features/quota/QuotaPage.tsx` | Forecast section under the tabs, `useForecastPrefs`, history shared with `AccountsTable` (which replaced the card grid), plugin tab hidden when empty, masked names. Upstream's card layout switch (`CardLayoutSwitch`, `StackedColumns`) is dropped since there are no cards; its Codex credit-overage counts go to `AccountsTable` as `creditOverageCountFor`. |
+| `src/features/quota/providers/claude/ClaudeResetGrants.tsx` | Upstream's dialog hook (explicit grant choice since v1.27.4, used by the card) plus the fork's `saved` grants fallback, `known`, and per-kind `lines`. Each line's `confirm` picks its kind's grant with the fork's `selectResetGrant.ts` (deleted upstream) and asks once (`confirm_text` / `confirm_text_fable`), then shares the dialog's `claim`. The fork has a button per kind, so the account row has no grant-choice dialog. The fork dropped two assertions from upstream's `card retains one dialog trigger…` test (`not.toContain('showConfirmation')` / `'selectResetGrant'`): they forbid this flow. Re-drop them if upstream changes that test. |
 | `src/features/quota/components/QuotaHeader.*` | "Show emails" button and the inline header style. |
 | `src/features/authFiles/components/ProviderTabs.*` | `variant="pills"`. |
 | `src/components/layout/MainLayout.tsx` | Brand block uses `ForkBrandLogo` (upstream's `abbrBrandName` is dropped). Keep upstream's `arrivingFromLogin` reveal wiring. |
@@ -198,9 +200,12 @@ UI:
 Even a clean rebase can break behaviour in these areas. Read the diffs, and if they
 change, re-check the fork feature that depends on them:
 
-- **Routing internals**: `selector.go`, `scheduler.go`, session affinity
-  (`conductor_selection.go`), weight parsing (`internal/credentialweight`). Boost
-  wiring could silently stop applying; `weekly_reset_boost_test.go` must still pass.
+- **Routing internals**: `selector.go`, `selector_weighted.go`, `scheduler.go`,
+  `scheduler_weighted.go`, session affinity (`conductor_selection.go`), weight parsing
+  (`internal/credentialweight`), and selector reuse on reloads (`service_config.go`).
+  Boost wiring could silently stop applying; `weekly_reset_boost_test.go` must still pass.
+  In v8.0.62 upstream moved every weighted pick into `reserveForRequest` and
+  `pickWeightedPoolLocked`: code that still compiled lost the ranking on the old paths.
 - **Quota headers**: `quota_signals.go`, `claude_ratelimit.go`, `codex_quota.go`
   (header names and formats feed the collector, the boost and the dashboard's account rows).
 - **Credentials list shape**: `recent_requests` (20 epoch-aligned 10-minute buckets),
@@ -214,6 +219,8 @@ change, re-check the fork feature that depends on them:
 - **UI quota providers**: state shapes in `src/types/quota.ts` and
   `providers/*/data.ts` feed `accounts/rowModel.ts`. `QuotaCard.tsx` changes (new
   actions) may need the same change in `accounts/AccountRow.tsx`, which replaced it.
+  `AccountRow` already renders the card's `ClaudeResetGrantDialog` and the Codex
+  credit-overage row and dialog (`useCodexCreditOverage`).
 - **UI routing strategy checks**: new upstream code that compares a strategy with
   `'weighted-round-robin'` must use `isWeightedRoutingStrategy`, and new strategy
   lists or normalizers must include `weekly-reset-weighted-round-robin`. Otherwise
@@ -255,6 +262,12 @@ Older images stay local until pruned, so rolling back the image is instant.
 - `management.disable-auto-update-panel: true` must stay set. Otherwise the
   backend downloads the official UI over the fork UI every few hours.
 - Quota history lives in `config/quota-history/` (root-owned, 35-day retention).
+  `reset-grants.json` there holds each Claude account's banked resets (the
+  `cedar_ember` block of `/api/oauth/usage`). The collector reads an account once,
+  and again on the next tick after a reset claim (`POST …/reset_rate_limits`) passes
+  through the management `api-call` endpoint; a failed read retries after 30 min.
+  `GET /v8/management/quota/history` returns it per account as `reset_grants`
+  (`stale` between a claim and the re-read). Delete the file to force a re-read.
   Env knobs: `QUOTA_HISTORY_DISABLE`, `QUOTA_HISTORY_DIR`,
   `QUOTA_HISTORY_POLL_INTERVAL` (default `10m`; `0` = header-only).
 - **Weekly-reset routing behaviour** (earliest effective deadline first; chosen by
@@ -290,6 +303,20 @@ Older images stay local until pruned, so rolling back the image is instant.
     account).
   - A manual reset (Claude banked reset, Codex manual reset) moves the reset time;
     the ranking corrects on the next response or poll, within ≤10 min.
+  - `routing.fable-reset-target: true` (off by default; `fable_reset_target.go`)
+    adds a Fable target: among the candidates with a usable Fable reset
+    (`reset-grants.json`, `SetFableResetHint`) and Fable left (`seven_day_fable`
+    from the poller, `SetFableUsageHint`), the one whose weekly reset is last. A
+    request whose model contains `fable` goes to it alone. Other models skip it
+    once weekly used + (100 − Fable used)/2 ≥ 100, unless it is the only candidate.
+    This outranks session affinity: a session bound to an account it keeps the
+    request off is rebound (except with `session-affinity-rebind-on: never`).
+    Claude headers have no Fable window, so the collector polls Claude usage every
+    interval even while header samples arrive.
+    When its Fable is used up, the next account becomes the target and the UI's ⚡
+    lights up; a claim through `api-call` clears the hint until the re-read.
+    Chosen by simulation: it claims about two more resets per
+    heavy week than plain weekly-reset routing.
 - Upstream's `sdk/cliproxy` tests `TestHandleAuthUpdates_SameRevisionWait…`,
   `TestEndToEndAuthFileReplacement…` and `TestServiceHeartbeatFailover…` are
   timing-sensitive and flake on unmodified upstream too; `verify.sh` retries that

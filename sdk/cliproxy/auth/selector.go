@@ -1640,6 +1640,11 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	}
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
+	// The Fable target outranks an established binding: a session bound to a credential
+	// it keeps this request off is rebound. "never" keeps every binding as configured.
+	if !s.rebindOnNever {
+		ctx, auths = withoutFableExcluded(ctx, s.fallback, provider, model, auths)
+	}
 
 	// Explicit harness identities are absolute authority. The LCP matcher is only
 	// consulted when no header, body, or execution-session identity is present.
