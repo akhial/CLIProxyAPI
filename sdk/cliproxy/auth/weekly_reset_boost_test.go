@@ -66,7 +66,7 @@ func rankWeights(boost *weeklyResetBoost, auths ...*Auth) map[string]int64 {
 	for _, auth := range auths {
 		weights[auth.ID] = authWeight(auth)
 	}
-	boost.rankAuthWeights(weights, auths)
+	boost.rankAuthWeights(weights, auths, "")
 	return weights
 }
 

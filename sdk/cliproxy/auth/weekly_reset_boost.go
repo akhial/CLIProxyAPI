@@ -48,6 +48,15 @@ func NewWeeklyResetWeightedRoundRobinSelector() *WeightedRoundRobinSelector {
 	return &WeightedRoundRobinSelector{resetBoost: &weeklyResetBoost{}}
 }
 
+// NewFableResetWeightedRoundRobinSelector is the weekly-reset selector with a Fable
+// target: Fable requests go to one credential with an unused Fable reset, the one whose
+// weekly limit resets last, until its Fable limit is used up and the reset can be
+// claimed. Other models keep off the weekly room the target's remaining Fable needs.
+// Everything else follows NewWeeklyResetWeightedRoundRobinSelector.
+func NewFableResetWeightedRoundRobinSelector() *WeightedRoundRobinSelector {
+	return &WeightedRoundRobinSelector{resetBoost: &weeklyResetBoost{fableResetTarget: true}}
+}
+
 // WeeklyQuota is an observation of a credential's weekly quota window.
 type WeeklyQuota struct {
 	ResetAt time.Time
@@ -82,6 +91,10 @@ type weeklyResetBoost struct {
 	weeklyHints  *quotaHintRegistry[WeeklyQuota]
 	sessionHints *quotaHintRegistry[SessionQuota]
 	stats        *quotaHintRegistry[RoutingStats]
+	fableUsage   *quotaHintRegistry[FableUsage]
+	fableResets  *quotaHintRegistry[bool]
+	// fableResetTarget concentrates Fable on one credential with a Fable reset.
+	fableResetTarget bool
 }
 
 // selectorResetBoost returns the weekly-reset boost of a weighted selector, if any.
@@ -201,11 +214,16 @@ func hoursToSpend(left, drain, share, room, end float64) float64 {
 // weight. The chosen ones keep their configured weights, and the others are removed,
 // keeping their smooth weighted credits as for any transient exclusion. Nothing changes
 // when no candidate's weekly reset is known, or for a selector without the strategy.
-func (b *weeklyResetBoost) rankAuthWeights(weights map[string]int64, auths []*Auth) {
+// With the Fable target on, model first narrows the candidates; see
+// NewFableResetWeightedRoundRobinSelector.
+func (b *weeklyResetBoost) rankAuthWeights(weights map[string]int64, auths []*Auth, model string) {
 	if b == nil || len(weights) == 0 {
 		return
 	}
 	now := b.clock()
+	if b.fableResetTarget && b.applyFableTarget(weights, auths, model, now) {
+		return
+	}
 	type ranked struct {
 		id string
 		routingRank
@@ -559,7 +577,7 @@ func (r *quotaHintRegistry[V]) evictOldestLocked() {
 
 // scheduledWeightFuncLocked returns the weekly-reset ranking for weighted scheduler
 // picks, or nil when configured weights apply. Callers hold s.mu.
-func (s *authScheduler) scheduledWeightFuncLocked(strategy schedulerStrategy) scheduledWeightFunc {
+func (s *authScheduler) scheduledWeightFuncLocked(strategy schedulerStrategy, model string) scheduledWeightFunc {
 	if s == nil || s.resetBoost == nil || strategy != schedulerStrategyWeightedRoundRobin {
 		return nil
 	}
@@ -583,6 +601,6 @@ func (s *authScheduler) scheduledWeightFuncLocked(strategy schedulerStrategy) sc
 			}
 			auths = append(auths, auth)
 		}
-		boost.rankAuthWeights(weights, auths)
+		boost.rankAuthWeights(weights, auths, model)
 	}
 }

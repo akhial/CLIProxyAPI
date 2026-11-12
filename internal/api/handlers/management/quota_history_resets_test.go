@@ -193,3 +193,26 @@ func TestAddQuotaHistoryResetGrants(t *testing.T) {
 		t.Fatalf("account b = %+v, want none", accounts[1].ResetGrants)
 	}
 }
+
+func TestHasUsableFableReset(t *testing.T) {
+	now := time.UnixMilli(1_800_000_000_000)
+	fable := claudeResetGrant{ID: "f", ResetsTotal: 1, ResetsLeft: 1, GivesBackWeekly: true}
+	cases := []struct {
+		name   string
+		record claudeResetGrants
+		want   bool
+	}{
+		{"fable reset", claudeResetGrants{Eligible: true, Grants: []claudeResetGrant{fable}}, true},
+		{"ineligible", claudeResetGrants{Grants: []claudeResetGrant{fable}}, false},
+		{"general only", claudeResetGrants{Eligible: true, Grants: []claudeResetGrant{{ID: "g", ResetsTotal: 1, ResetsLeft: 1}}}, false},
+		{"spent", claudeResetGrants{Eligible: true, Grants: []claudeResetGrant{{ID: "f", ResetsTotal: 1, GivesBackWeekly: true}}}, false},
+		{"paused", claudeResetGrants{Eligible: true, Grants: []claudeResetGrant{{ID: "f", ResetsTotal: 1, ResetsLeft: 1, GivesBackWeekly: true, Paused: true}}}, false},
+		{"expired", claudeResetGrants{Eligible: true, Grants: []claudeResetGrant{{ID: "f", ResetsTotal: 1, ResetsLeft: 1, GivesBackWeekly: true, EndsAt: now.UnixMilli()}}}, false},
+		{"not started", claudeResetGrants{Eligible: true, Grants: []claudeResetGrant{{ID: "f", ResetsTotal: 1, ResetsLeft: 1, GivesBackWeekly: true, StartsAt: now.UnixMilli() + 1}}}, false},
+	}
+	for _, tc := range cases {
+		if got := hasUsableFableReset(tc.record, now); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

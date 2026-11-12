@@ -105,3 +105,17 @@ func TestApplyManagerConfigSwitchesToWeeklyResetStrategy(t *testing.T) {
 		t.Fatalf("picks after switching strategy = %#v, want all on %s", counts, soonID)
 	}
 }
+
+func TestFableResetTargetNeedsWeeklyResetStrategy(t *testing.T) {
+	for _, tc := range []struct {
+		strategy string
+		want     bool
+	}{{"weekly-reset-wrr", true}, {"round-robin", false}, {"weighted-round-robin", false}} {
+		state := normalizedRoutingRuntimeState(&internalconfig.Config{
+			Routing: internalconfig.RoutingConfig{Strategy: tc.strategy, FableResetTarget: true},
+		})
+		if state.fableResetTarget != tc.want {
+			t.Fatalf("fable-reset-target with %s = %v, want %v", tc.strategy, state.fableResetTarget, tc.want)
+		}
+	}
+}

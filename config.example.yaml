@@ -179,6 +179,11 @@ routing:
   # with an unknown reset come last; exact ties share by weight. Reset times, usage and 5-hour
   # windows come from response headers and the quota history poller, which also measures each
   # credential's weekly share per 5-hour window and the pool's traffic over the last day.
+  # fable-reset-target (default false, weekly-reset strategy only) sends Fable requests to one
+  # Claude credential with an unused Fable reset, the one whose weekly limit resets last, until
+  # its Fable limit is used up and the reset can be claimed. Other models skip it once its
+  # weekly limit only has the room its remaining Fable needs (Fable 100% is 50% of the week).
+  # fable-reset-target: false
   # For OAuth/file credentials, add a top-level numeric "weight" field to the auth JSON.
   # Enable universal session-sticky routing for all clients.
   # Explicit Claude Code, Codex, OpenCode, and pi session headers are preferred,

@@ -217,6 +217,24 @@ func safeResetGrantText(raw string) string {
 	return cleaned
 }
 
+// hasUsableFableReset reports whether record holds a Fable reset that can be claimed
+// at now.
+func hasUsableFableReset(record claudeResetGrants, now time.Time) bool {
+	if !record.Eligible {
+		return false
+	}
+	nowMs := now.UnixMilli()
+	for _, grant := range record.Grants {
+		if !grant.GivesBackWeekly || grant.ResetsLeft <= 0 || grant.Paused {
+			continue
+		}
+		if (grant.StartsAt == 0 || grant.StartsAt <= nowMs) && (grant.EndsAt == 0 || grant.EndsAt > nowMs) {
+			return true
+		}
+	}
+	return false
+}
+
 // isClaudeResetClaim reports whether a management api-call request spends a banked reset.
 func isClaudeResetClaim(method string, target *url.URL) bool {
 	if target == nil || !strings.EqualFold(method, http.MethodPost) {

@@ -403,6 +403,11 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 		!now.Before(state.resetGrantsRetryAt) && c.resets.NeedsRead(auth.ID) {
 		c.readResetGrants(ctx, auth, state, now)
 	}
+	if provider == "claude" && c.resets != nil {
+		if record, ok, stale := c.resets.Get(auth.ID); ok && !stale {
+			coreauth.SetFableResetHint(auth.ID, hasUsableFableReset(record, now), now)
+		}
+	}
 
 	if c.recordHeaderSample(auth, provider, state) {
 		return
@@ -546,6 +551,9 @@ func (c *quotaHistoryCollector) readResetGrants(ctx context.Context, auth *corea
 func (h *Handler) InvalidateClaudeResetGrants(authID string) {
 	if collector := quotaHistoryCollectorFor(h); collector != nil && collector.resets != nil && authID != "" {
 		collector.resets.Invalidate(authID)
+		// Until the grants are read again, the Fable target must not wait on a reset
+		// that was probably just spent.
+		coreauth.SetFableResetHint(authID, false, collector.nowFunc())
 	}
 }
 
@@ -627,19 +635,27 @@ func (c *quotaHistoryCollector) record(auth *coreauth.Auth, provider string, sta
 // with the weekly-reset routing strategy, which cannot read quota history itself.
 // Only samples with a weekly window speak for the plan's windows.
 func publishQuotaHistoryRoutingHints(authID string, at time.Time, windows []quotaHistoryWindow) {
-	var weekly, session *quotaHistoryWindow
+	var weekly, session, fable *quotaHistoryWindow
 	for index := range windows {
 		switch windows[index].ID {
 		case quotaHistoryWindowSevenDay:
 			weekly = &windows[index]
 		case quotaHistoryWindowFiveHour:
 			session = &windows[index]
+		case quotaHistoryWindowFable:
+			fable = &windows[index]
 		}
 	}
 	if weekly == nil {
 		return
 	}
-
+	if fable != nil {
+		usage := coreauth.FableUsage{UsedPercent: fable.Used}
+		if fable.ResetAt > 0 {
+			usage.ResetAt = time.UnixMilli(fable.ResetAt)
+		}
+		coreauth.SetFableUsageHint(authID, usage, at)
+	}
 	if weekly.ResetAt > 0 {
 		coreauth.SetWeeklyQuotaHint(authID, coreauth.WeeklyQuota{
 			ResetAt:     time.UnixMilli(weekly.ResetAt),
