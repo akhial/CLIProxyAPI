@@ -521,7 +521,7 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 			namespace = "mixed"
 		}
 		route := namespace + ":" + canonicalModelLookupKey(weightedSelectorStateModel(ctx, model))
-		return s.pickWeightedPoolLocked(route, priority, transportClass, entries, accountingPredicate, pinnedAuthID, nonWebsocketOnly)
+		return s.pickWeightedPoolLocked(route, model, priority, transportClass, entries, accountingPredicate, pinnedAuthID, nonWebsocketOnly)
 	}
 	if picked := shard.pickReadyLocked(preferWebsocket, strategy, predicate); picked != nil {
 		return picked, nil
@@ -673,7 +673,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 			return nil, "", ctx.Err()
 		}
 		route := "mixed:" + canonicalModelLookupKey(weightedSelectorStateModel(ctx, model))
-		picked, errPick := s.pickWeightedPoolLocked(route, bestPriority, "", entries, predicate, pinnedAuthID, false)
+		picked, errPick := s.pickWeightedPoolLocked(route, model, bestPriority, "", entries, predicate, pinnedAuthID, false)
 		if errPick != nil {
 			return nil, "", errPick
 		}

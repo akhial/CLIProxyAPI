@@ -144,4 +144,29 @@ func TestReuseWeightedRoundRobinSelectorKeepsMatchingRanking(t *testing.T) {
 	if got := coreauth.ReuseWeightedRoundRobinSelector(plain, want); got != want {
 		t.Fatal("plain weighted selector was reused for weekly-reset routing")
 	}
+	fable := coreauth.NewFableResetWeightedRoundRobinSelector()
+	if got := coreauth.ReuseWeightedRoundRobinSelector(weekly, fable); got != fable {
+		t.Fatal("weekly-reset selector without the Fable target was reused with fable-reset-target on")
+	}
+	want = coreauth.NewWeeklyResetWeightedRoundRobinSelector()
+	if got := coreauth.ReuseWeightedRoundRobinSelector(fable, want); got != want {
+		t.Fatal("Fable-target selector was reused with fable-reset-target off")
+	}
+	if got := coreauth.ReuseWeightedRoundRobinSelector(fable, coreauth.NewFableResetWeightedRoundRobinSelector()); got != fable {
+		t.Fatal("Fable-target selector was not reused with fable-reset-target on")
+	}
+}
+
+func TestFableResetTargetNeedsWeeklyResetStrategy(t *testing.T) {
+	for _, tc := range []struct {
+		strategy string
+		want     bool
+	}{{"weekly-reset-wrr", true}, {"round-robin", false}, {"weighted-round-robin", false}} {
+		state := normalizedRoutingRuntimeState(&internalconfig.Config{
+			Routing: internalconfig.RoutingConfig{Strategy: tc.strategy, FableResetTarget: true},
+		})
+		if state.fableResetTarget != tc.want {
+			t.Fatalf("fable-reset-target with %s = %v, want %v", tc.strategy, state.fableResetTarget, tc.want)
+		}
+	}
 }

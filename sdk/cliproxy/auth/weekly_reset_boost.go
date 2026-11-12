@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"math"
 	"net/http"
 	"sort"
@@ -49,6 +50,15 @@ func NewWeeklyResetWeightedRoundRobinSelector() *WeightedRoundRobinSelector {
 	return &WeightedRoundRobinSelector{resetBoost: &weeklyResetBoost{}}
 }
 
+// NewFableResetWeightedRoundRobinSelector is the weekly-reset selector with a Fable
+// target: Fable requests go to one credential with an unused Fable reset, the one whose
+// weekly limit resets last, until its Fable limit is used up and the reset can be
+// claimed. Other models keep off the weekly room the target's remaining Fable needs.
+// Everything else follows NewWeeklyResetWeightedRoundRobinSelector.
+func NewFableResetWeightedRoundRobinSelector() *WeightedRoundRobinSelector {
+	return &WeightedRoundRobinSelector{resetBoost: &weeklyResetBoost{fableResetTarget: true}}
+}
+
 // WeeklyQuota is an observation of a credential's weekly quota window.
 type WeeklyQuota struct {
 	ResetAt time.Time
@@ -83,6 +93,10 @@ type weeklyResetBoost struct {
 	weeklyHints  *quotaHintRegistry[WeeklyQuota]
 	sessionHints *quotaHintRegistry[SessionQuota]
 	stats        *quotaHintRegistry[RoutingStats]
+	fableUsage   *quotaHintRegistry[FableUsage]
+	fableResets  *quotaHintRegistry[bool]
+	// fableResetTarget concentrates Fable on one credential with a Fable reset.
+	fableResetTarget bool
 }
 
 // selectorResetBoost returns the weekly-reset boost of a weighted selector, if any.
@@ -94,8 +108,8 @@ func selectorResetBoost(selector Selector) *weeklyResetBoost {
 }
 
 // ReuseWeightedRoundRobinSelector returns the weighted selector inside existing when it
-// ranks like want (both plain, or both weekly-reset), so a routing change that keeps the
-// strategy keeps its credits; otherwise it returns want.
+// ranks like want (both plain, or both weekly-reset with the same Fable target), so a
+// routing change that keeps the strategy keeps its credits; otherwise it returns want.
 func ReuseWeightedRoundRobinSelector(existing Selector, want *WeightedRoundRobinSelector) *WeightedRoundRobinSelector {
 	if current := UnwrapWeightedRoundRobinSelector(existing); current != nil && want != nil && sameResetBoost(current.resetBoost, want.resetBoost) {
 		return current
@@ -105,7 +119,10 @@ func ReuseWeightedRoundRobinSelector(existing Selector, want *WeightedRoundRobin
 
 // sameResetBoost reports whether two selectors' weekly-reset settings route alike.
 func sameResetBoost(left, right *weeklyResetBoost) bool {
-	return (left == nil) == (right == nil)
+	if left == nil || right == nil {
+		return left == right
+	}
+	return left.fableResetTarget == right.fableResetTarget
 }
 
 func (b *weeklyResetBoost) clock() time.Time {
@@ -217,11 +234,16 @@ func hoursToSpend(left, drain, share, room, end float64) float64 {
 // weight. The chosen ones keep their configured weights, and the others are removed,
 // keeping their smooth weighted credits as for any transient exclusion. Nothing changes
 // when no candidate's weekly reset is known, or for a selector without the strategy.
-func (b *weeklyResetBoost) rankAuthWeights(weights map[string]int64, auths []*Auth) {
+// With the Fable target on, model first narrows the candidates; see
+// NewFableResetWeightedRoundRobinSelector.
+func (b *weeklyResetBoost) rankAuthWeights(weights map[string]int64, auths []*Auth, model string) {
 	if b == nil || len(weights) == 0 {
 		return
 	}
 	now := b.clock()
+	if b.fableResetTarget && b.applyFableTarget(weights, auths, model, now) {
+		return
+	}
 	type ranked struct {
 		id string
 		routingRank
@@ -581,10 +603,10 @@ func (s *authScheduler) resetBoost() *weeklyResetBoost {
 	return selectorResetBoost(s.weightedSelector)
 }
 
-// weeklyResetPoolLocked applies the weekly-reset ranking to an unpinned weighted scheduler
-// pool: auths, ids (sorted) and weights are parallel. A pool without the strategy is
-// returned unchanged. Callers hold s.mu.
-func (s *authScheduler) weeklyResetPoolLocked(auths []*Auth, ids []string, weights []int64) ([]*Auth, []string, []int64) {
+// weeklyResetPoolLocked applies the weekly-reset ranking for model to an unpinned weighted
+// scheduler pool: auths, ids (sorted) and weights are parallel. A pool without the strategy
+// is returned unchanged. Callers hold s.mu.
+func (s *authScheduler) weeklyResetPoolLocked(model string, auths []*Auth, ids []string, weights []int64) ([]*Auth, []string, []int64) {
 	boost := s.resetBoost()
 	if boost == nil || len(auths) == 0 {
 		return auths, ids, weights
@@ -602,18 +624,21 @@ func (s *authScheduler) weeklyResetPoolLocked(auths []*Auth, ids []string, weigh
 		}
 		latest = append(latest, auth)
 	}
-	boost.rankAuthWeights(vector, latest)
+	boost.rankAuthWeights(vector, latest, model)
 	return weightedPoolFromVector(auths, vector)
 }
 
 // reserveWeeklyResetScoped is reserveScoped with the weekly-reset ranking applied to an
-// unbound pick. A bound pick (authID set) keeps the configured weights.
-func (s *WeightedRoundRobinSelector) reserveWeeklyResetScoped(route string, priority int, transportClass string, available []*Auth, authID string) (*Auth, *weightedReservation) {
-	if s.resetBoost == nil || authID != "" {
+// unbound pick, ranked with the route model so Fable requests are recognized. A bound pick
+// (authID set) keeps the configured weights, and a Fable target session affinity already
+// applied is not applied again.
+func (s *WeightedRoundRobinSelector) reserveWeeklyResetScoped(ctx context.Context, model, route string, priority int, transportClass string, available []*Auth, authID string) (*Auth, *weightedReservation) {
+	boost := withoutAppliedFableTarget(ctx, s.resetBoost)
+	if boost == nil || authID != "" {
 		return s.reserveScoped(route, priority, transportClass, available, authID)
 	}
 	vector := authWeightVector(available)
-	s.resetBoost.rankAuthWeights(vector, available)
+	boost.rankAuthWeights(vector, available, weightedSelectorStateModel(ctx, model))
 	auths, ids, weights := weightedPoolFromVector(available, vector)
 	return s.reservePoolScoped(route, priority, transportClass, auths, weights, ids, authID)
 }
