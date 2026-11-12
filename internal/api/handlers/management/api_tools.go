@@ -217,8 +217,9 @@ func (h *Handler) APICall(c *gin.Context) {
 
 	resp, errDo := httpClient.Do(req)
 	// A banked-reset claim may have been spent even when the outcome is unknown, so
-	// the saved resets are read again whatever the result.
-	if auth != nil && isClaudeResetClaim(method, parsedURL) {
+	// the saved resets are read again whatever the result. The deprecated v0 route
+	// keeps its old behavior.
+	if auth != nil && c.GetBool(ConfigV8ContextKey) && isClaudeResetClaim(method, parsedURL) {
 		h.InvalidateClaudeResetGrants(auth.ID)
 	}
 	if errDo != nil {

@@ -110,6 +110,10 @@ func TestQuotaHistoryCollector_ReadsResetGrantsOnceAndAfterAClaim(t *testing.T) 
 	if _, _, stale := collector.resets.Get(auth.ID); !stale {
 		t.Fatal("record not stale after invalidation")
 	}
+	// A restart before that read still reads it again.
+	if !newQuotaHistoryResetStore(collector.store.dir).NeedsRead(auth.ID) {
+		t.Fatal("restarted store does not read again after a claim")
+	}
 	clock.Advance(time.Minute)
 	collector.tick(ctx)
 	record, _, stale = collector.resets.Get(auth.ID)

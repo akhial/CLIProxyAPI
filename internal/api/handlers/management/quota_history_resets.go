@@ -57,6 +57,9 @@ type claudeResetGrants struct {
 	IneligibleReason string             `json:"ineligible_reason,omitempty"`
 	CooldownUntil    int64              `json:"cooldown_until,omitempty"`
 	Grants           []claudeResetGrant `json:"grants"`
+	// Stale is set by a claim until the next read. It is saved, so a restart in
+	// between still reads the account again.
+	Stale bool `json:"stale,omitempty"`
 }
 
 // parseClaudeResetGrants reads the cedar_ember block of a usage response with the
@@ -251,14 +254,12 @@ type quotaHistoryResetStore struct {
 	mu      sync.Mutex
 	loaded  bool
 	records map[string]claudeResetGrants
-	stale   map[string]struct{}
 }
 
 func newQuotaHistoryResetStore(dir string) *quotaHistoryResetStore {
 	return &quotaHistoryResetStore{
 		path:    filepath.Join(dir, quotaHistoryResetGrantsFileName),
 		records: make(map[string]claudeResetGrants),
-		stale:   make(map[string]struct{}),
 	}
 }
 
@@ -290,8 +291,7 @@ func (s *quotaHistoryResetStore) Get(authID string) (claudeResetGrants, bool, bo
 	defer s.mu.Unlock()
 	s.loadLocked()
 	record, ok := s.records[authID]
-	_, stale := s.stale[authID]
-	return record, ok, stale
+	return record, ok, record.Stale
 }
 
 // NeedsRead reports whether authID has no record or an out-of-date one.
@@ -306,7 +306,6 @@ func (s *quotaHistoryResetStore) Put(authID string, record claudeResetGrants) er
 	defer s.mu.Unlock()
 	s.loadLocked()
 	s.records[authID] = record
-	delete(s.stale, authID)
 	return s.saveLocked()
 }
 
@@ -314,7 +313,16 @@ func (s *quotaHistoryResetStore) Put(authID string, record claudeResetGrants) er
 func (s *quotaHistoryResetStore) Invalidate(authID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.stale[authID] = struct{}{}
+	s.loadLocked()
+	record, ok := s.records[authID]
+	if !ok || record.Stale {
+		return
+	}
+	record.Stale = true
+	s.records[authID] = record
+	if errSave := s.saveLocked(); errSave != nil {
+		log.WithError(errSave).Warn("quota history: failed to save reset grant invalidation")
+	}
 }
 
 func (s *quotaHistoryResetStore) saveLocked() error {
