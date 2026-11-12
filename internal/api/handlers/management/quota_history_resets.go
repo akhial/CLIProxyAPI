@@ -254,12 +254,16 @@ type quotaHistoryResetStore struct {
 	mu      sync.Mutex
 	loaded  bool
 	records map[string]claudeResetGrants
+	// claims counts invalidations per credential, so a read that a claim overtook
+	// keeps the record stale.
+	claims map[string]uint64
 }
 
 func newQuotaHistoryResetStore(dir string) *quotaHistoryResetStore {
 	return &quotaHistoryResetStore{
 		path:    filepath.Join(dir, quotaHistoryResetGrantsFileName),
 		records: make(map[string]claudeResetGrants),
+		claims:  make(map[string]uint64),
 	}
 }
 
@@ -300,11 +304,20 @@ func (s *quotaHistoryResetStore) NeedsRead(authID string) bool {
 	return !ok || stale
 }
 
-// Put saves a fresh record for authID.
-func (s *quotaHistoryResetStore) Put(authID string, record claudeResetGrants) error {
+// Claims returns how many claims have invalidated authID; pass it to Put.
+func (s *quotaHistoryResetStore) Claims(authID string) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.claims[authID]
+}
+
+// Put saves a record for authID read after claims invalidations. It stays stale when
+// a claim arrived during the read, since the read may predate it.
+func (s *quotaHistoryResetStore) Put(authID string, record claudeResetGrants, claims uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.loadLocked()
+	record.Stale = s.claims[authID] != claims
 	s.records[authID] = record
 	return s.saveLocked()
 }
@@ -314,6 +327,7 @@ func (s *quotaHistoryResetStore) Invalidate(authID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.loadLocked()
+	s.claims[authID]++
 	record, ok := s.records[authID]
 	if !ok || record.Stale {
 		return

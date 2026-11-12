@@ -184,7 +184,7 @@ func TestIsClaudeResetClaim(t *testing.T) {
 
 func TestAddQuotaHistoryResetGrants(t *testing.T) {
 	store := newQuotaHistoryResetStore(t.TempDir())
-	if errPut := store.Put("a", claudeResetGrants{CheckedAt: 1, Eligible: true, Grants: []claudeResetGrant{{ID: "g"}}}); errPut != nil {
+	if errPut := store.Put("a", claudeResetGrants{CheckedAt: 1, Eligible: true, Grants: []claudeResetGrant{{ID: "g"}}}, 0); errPut != nil {
 		t.Fatal(errPut)
 	}
 	store.Invalidate("a")
@@ -218,5 +218,28 @@ func TestHasUsableFableReset(t *testing.T) {
 		if got := hasUsableFableReset(tc.record, now); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A claim that lands while a read is in flight keeps the record stale, because the
+// read may have been answered before the claim.
+func TestQuotaHistoryResetStore_ClaimDuringReadStaysStale(t *testing.T) {
+	store := newQuotaHistoryResetStore(t.TempDir())
+	if errPut := store.Put("a", claudeResetGrants{CheckedAt: 1}, store.Claims("a")); errPut != nil {
+		t.Fatal(errPut)
+	}
+	claims := store.Claims("a")
+	store.Invalidate("a")
+	if errPut := store.Put("a", claudeResetGrants{CheckedAt: 2}, claims); errPut != nil {
+		t.Fatal(errPut)
+	}
+	if !store.NeedsRead("a") {
+		t.Fatal("record read before the claim counts as fresh")
+	}
+	if errPut := store.Put("a", claudeResetGrants{CheckedAt: 3}, store.Claims("a")); errPut != nil {
+		t.Fatal(errPut)
+	}
+	if store.NeedsRead("a") {
+		t.Fatal("record read after the claim still needs a read")
 	}
 }

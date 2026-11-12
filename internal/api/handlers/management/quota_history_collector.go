@@ -516,6 +516,7 @@ func (c *quotaHistoryCollector) refreshClaudePlan(ctx context.Context, auth *cor
 // change when a reset is spent, so callers read a credential once and again after a
 // claim; a failed read is retried after quotaHistoryResetGrantsRetry.
 func (c *quotaHistoryCollector) readResetGrants(ctx context.Context, auth *coreauth.Auth, state *quotaHistoryAuthState, now time.Time) {
+	claims := c.resets.Claims(auth.ID)
 	errRead := func() error {
 		token, errToken := c.token(ctx, auth)
 		if errToken != nil {
@@ -531,7 +532,7 @@ func (c *quotaHistoryCollector) readResetGrants(ctx context.Context, auth *corea
 		if errParse != nil {
 			return errParse
 		}
-		if errPut := c.resets.Put(auth.ID, grants); errPut != nil {
+		if errPut := c.resets.Put(auth.ID, grants, claims); errPut != nil {
 			// The record is kept in memory, so the next tick does not read it again.
 			c.logEntry(auth, "claude").WithError(errPut).Warn("quota history: failed to save reset grants")
 		}
