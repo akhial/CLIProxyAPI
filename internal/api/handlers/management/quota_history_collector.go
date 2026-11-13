@@ -39,6 +39,9 @@ const (
 	// per-credential schedules.
 	quotaHistoryStateLookback    = 48 * time.Hour
 	quotaHistoryMaxResponseBytes = 1 << 20
+	// quotaHistoryResetDrop is the least fall in used percent that counts as an early
+	// reset; header and poll values of one window differ by up to a point.
+	quotaHistoryResetDrop = 2
 
 	quotaHistorySourcePoll   = "poll"
 	quotaHistorySourceHeader = "header"
@@ -66,6 +69,8 @@ type quotaHistoryAuthState struct {
 	// lastPoll is the last usage poll. Claude headers carry no Fable window, so Claude
 	// is polled every interval even while header samples keep arriving.
 	lastPoll time.Time
+	// windows are the last recorded sample's windows, to spot a usage drop before its reset.
+	windows []quotaHistoryWindow
 }
 
 // quotaHistoryCollector records Claude and Codex OAuth quota samples from passive
@@ -79,6 +84,12 @@ type quotaHistoryCollector struct {
 	listAuths    func() []*coreauth.Auth
 	resolveToken func(ctx context.Context, auth *coreauth.Auth) (string, error)
 	do           quotaHistoryDoFunc
+	// resetCooldown lifts the cooldown of a credential whose quota came back early.
+	resetCooldown func(ctx context.Context, auth *coreauth.Auth)
+
+	// pollRequests holds credentials to poll on the next tick, set from request handlers.
+	pollRequestsMu sync.Mutex
+	pollRequests   map[string]bool
 
 	// The fields below are owned by the goroutine running tick.
 	states      map[string]*quotaHistoryAuthState
@@ -101,8 +112,9 @@ func newQuotaHistoryCollector(h *Handler, store *quotaHistoryStore, pollInterval
 		resolveToken: func(ctx context.Context, auth *coreauth.Auth) (string, error) {
 			return h.resolveTokenForAuth(ctx, auth, "")
 		},
-		do:     h.quotaHistoryDo,
-		states: make(map[string]*quotaHistoryAuthState),
+		do:            h.quotaHistoryDo,
+		resetCooldown: h.quotaHistoryResetCooldown,
+		states:        make(map[string]*quotaHistoryAuthState),
 	}
 }
 
@@ -359,6 +371,7 @@ func (c *quotaHistoryCollector) loadState(now time.Time) int {
 			continue
 		}
 		state.lastSample = sampledAt
+		state.windows = sample.Windows
 		if sample.Plan != "" {
 			state.plan = sample.Plan
 		}
@@ -396,6 +409,7 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 	auth.EnsureIndex()
 	provider := quotaHistoryProvider(auth)
 	state := c.state(auth.ID)
+	pollNow := c.takePollRequest(auth.ID)
 
 	if provider == "claude" && c.pollInterval > 0 &&
 		(state.planCheckedAt.IsZero() || now.Sub(state.planCheckedAt) >= quotaHistoryPlanRefresh) {
@@ -412,7 +426,7 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 		}
 	}
 
-	if c.recordHeaderSample(auth, provider, state) {
+	if c.recordHeaderSample(ctx, auth, provider, state) && !pollNow {
 		return
 	}
 	if c.pollInterval <= 0 || now.Before(state.nextPollAt) {
@@ -422,7 +436,7 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 	if provider == "claude" {
 		lastSample = state.lastPoll
 	}
-	if !lastSample.IsZero() && now.Sub(lastSample) < c.pollInterval {
+	if !pollNow && !lastSample.IsZero() && now.Sub(lastSample) < c.pollInterval {
 		return
 	}
 	if errPoll := c.poll(ctx, auth, provider, state, now); errPoll != nil {
@@ -435,7 +449,7 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 
 // recordHeaderSample records the passive header snapshot when it is newer than
 // the last sample and at least quotaHistoryMinHeaderSpacing after it.
-func (c *quotaHistoryCollector) recordHeaderSample(auth *coreauth.Auth, provider string, state *quotaHistoryAuthState) bool {
+func (c *quotaHistoryCollector) recordHeaderSample(ctx context.Context, auth *coreauth.Auth, provider string, state *quotaHistoryAuthState) bool {
 	observedAt := auth.Quota.ObservedAt
 	if observedAt.IsZero() || len(auth.Quota.Signals) == 0 {
 		return false
@@ -451,7 +465,7 @@ func (c *quotaHistoryCollector) recordHeaderSample(auth *coreauth.Auth, provider
 	if plan != "" {
 		state.plan = plan
 	}
-	c.record(auth, provider, state, observedAt, quotaHistorySourceHeader, windows)
+	c.record(ctx, auth, provider, state, observedAt, quotaHistorySourceHeader, windows)
 	return true
 }
 
@@ -486,7 +500,7 @@ func (c *quotaHistoryCollector) poll(ctx context.Context, auth *coreauth.Auth, p
 	if len(windows) == 0 {
 		return errors.New("usage response contained no quota windows")
 	}
-	c.record(auth, provider, state, now, quotaHistorySourcePoll, windows)
+	c.record(ctx, auth, provider, state, now, quotaHistorySourcePoll, windows)
 	state.lastPoll = now
 	state.failures = 0
 	state.nextPollAt = time.Time{}
@@ -618,10 +632,22 @@ func (c *quotaHistoryCollector) recordPollFailure(auth *coreauth.Auth, provider 
 	entry.Debug("quota history: quota poll failed")
 }
 
-func (c *quotaHistoryCollector) record(auth *coreauth.Auth, provider string, state *quotaHistoryAuthState, at time.Time, source string, windows []quotaHistoryWindow) {
+func (c *quotaHistoryCollector) record(ctx context.Context, auth *coreauth.Auth, provider string, state *quotaHistoryAuthState, at time.Time, source string, windows []quotaHistoryWindow) {
+	if quotaHistoryResetEarly(state.windows, windows, at) {
+		// A plan change or a claimed reset: the sample should carry the new plan, and a
+		// cooldown waiting for the old reset no longer applies.
+		if provider == "claude" {
+			state.planCheckedAt = c.nowFunc()
+			c.refreshClaudePlan(ctx, auth, state)
+		}
+		if c.resetCooldown != nil {
+			c.resetCooldown(ctx, auth)
+		}
+	}
 	// Advance the schedule even if the write fails, so a broken disk does not
 	// turn into an upstream poll on every tick.
 	state.lastSample = at
+	state.windows = windows
 	publishQuotaHistoryRoutingHints(auth.ID, at, windows)
 	sample := quotaHistorySample{
 		T:         at.UnixMilli(),
@@ -638,6 +664,67 @@ func (c *quotaHistoryCollector) record(auth *coreauth.Auth, provider string, sta
 	if errAppend := c.store.Append(sample); errAppend != nil {
 		c.logEntry(auth, provider).WithError(errAppend).Warn("quota history: failed to record sample")
 	}
+}
+
+// quotaHistoryResetEarly reports whether the 5-hour or weekly usage fell before the
+// reset the previous sample reported, as on a plan upgrade or a claimed reset.
+func quotaHistoryResetEarly(previous, current []quotaHistoryWindow, at time.Time) bool {
+	for _, before := range previous {
+		if before.ID != quotaHistoryWindowFiveHour && before.ID != quotaHistoryWindowSevenDay {
+			continue
+		}
+		if before.ResetAt <= at.UnixMilli() {
+			continue
+		}
+		for _, after := range current {
+			if after.ID == before.ID && before.Used-after.Used >= quotaHistoryResetDrop {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// RequestQuotaHistoryPoll asks the collector to poll authID's usage on its next tick,
+// so a live read in the management UI is soon recorded with the current plan.
+func (h *Handler) RequestQuotaHistoryPoll(authID string) {
+	collector := quotaHistoryCollectorFor(h)
+	if collector == nil || authID == "" {
+		return
+	}
+	collector.pollRequestsMu.Lock()
+	defer collector.pollRequestsMu.Unlock()
+	if collector.pollRequests == nil {
+		collector.pollRequests = make(map[string]bool)
+	}
+	collector.pollRequests[authID] = true
+}
+
+func (c *quotaHistoryCollector) takePollRequest(authID string) bool {
+	c.pollRequestsMu.Lock()
+	defer c.pollRequestsMu.Unlock()
+	requested := c.pollRequests[authID]
+	delete(c.pollRequests, authID)
+	return requested
+}
+
+// quotaHistoryResetCooldown lifts the cooldowns of a credential whose quota was reset early.
+func (h *Handler) quotaHistoryResetCooldown(ctx context.Context, auth *coreauth.Auth) {
+	if h == nil || len(coreauth.CooldownSnapshotForAuth(auth, time.Now())) == 0 {
+		return
+	}
+	h.mu.Lock()
+	manager := h.authManager
+	h.mu.Unlock()
+	if manager == nil {
+		return
+	}
+	entry := log.WithFields(log.Fields{"auth_index": auth.Index, "file_name": quotaHistoryFileName(auth)})
+	if _, _, errReset := manager.ResetQuota(ctx, auth.ID); errReset != nil {
+		entry.WithError(errReset).Warn("quota history: failed to lift cooldown after an early reset")
+		return
+	}
+	entry.Info("quota history: quota reset early, cooldown lifted")
 }
 
 // publishQuotaHistoryRoutingHints shares the weekly window and the 5-hour window

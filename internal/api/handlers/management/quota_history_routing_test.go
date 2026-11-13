@@ -114,3 +114,20 @@ func TestAddQuotaHistoryRouting(t *testing.T) {
 		t.Fatalf("a credential no longer loaded got routing %+v", accounts[1].Routing)
 	}
 }
+
+func TestQuotaHistoryConsumed_WeighsEachSampleByItsPlan(t *testing.T) {
+	reset := int64(10_000_000)
+	sample := func(t int64, plan string, used float64) quotaHistorySample {
+		return quotaHistorySample{T: t, Provider: "claude", Plan: plan, Windows: []quotaHistoryWindow{{ID: quotaHistoryWindowSevenDay, Used: used, ResetAt: reset}}}
+	}
+	samples := []quotaHistorySample{
+		sample(1000, "", 10),
+		sample(2000, "pro", 50),
+		// Upgraded to Max 5x: the week starts over, then 10 Max points are 50 Pro points.
+		sample(3000, "max5", 0),
+		sample(4000, "max5", 10),
+	}
+	if got := quotaHistoryConsumed(samples, 0); math.Abs(got-90) > 1e-9 {
+		t.Fatalf("consumed = %v, want 40 + 50 Pro points", got)
+	}
+}
