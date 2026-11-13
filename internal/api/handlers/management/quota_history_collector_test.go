@@ -572,3 +572,103 @@ func TestQuotaHistoryCollector_ClaudePollsDespiteHeaderTraffic(t *testing.T) {
 		t.Fatalf("claude usage polls in 30 min of header traffic = %d, want at least 2", got)
 	}
 }
+
+func TestQuotaHistoryCollector_EarlyResetRefreshesPlanAndLiftsCooldown(t *testing.T) {
+	auth := testQuotaHistoryClaudeAuth()
+	collector, clock, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, auth)
+	var lifted []string
+	collector.resetCooldown = func(_ context.Context, auth *coreauth.Auth) { lifted = append(lifted, auth.ID) }
+	ctx := context.Background()
+	doer.set(quotaHistoryClaudeProfileURL, fakeQuotaHistoryResponse{status: http.StatusOK, body: `{"account":{"has_claude_max":false,"has_claude_pro":true}}`})
+	collector.tick(ctx)
+
+	// Usage that grows is no early reset.
+	doer.set(quotaHistoryClaudeUsageURL, fakeQuotaHistoryResponse{status: http.StatusOK, body: `{"five_hour":{"utilization":100,"resets_at":"2026-10-27T15:00:00Z"},"seven_day":{"utilization":54,"resets_at":"2026-11-01T09:00:00Z"}}`})
+	clock.Advance(10 * time.Minute)
+	collector.tick(ctx)
+	if got := len(doer.requestsTo(quotaHistoryClaudeProfileURL)); got != 1 || len(lifted) != 0 {
+		t.Fatalf("after growing usage: profile reads = %d, lifted = %v; want 1 and none", got, lifted)
+	}
+
+	// Upgraded to Max 5x: both windows start over before their resets.
+	doer.set(quotaHistoryClaudeProfileURL, fakeQuotaHistoryResponse{status: http.StatusOK, body: `{"account":{"has_claude_max":true},"organization":{"rate_limit_tier":"default_claude_max_5x"}}`})
+	doer.set(quotaHistoryClaudeUsageURL, fakeQuotaHistoryResponse{status: http.StatusOK, body: `{"five_hour":{"utilization":0,"resets_at":null},"seven_day":{"utilization":0,"resets_at":"2026-11-01T09:00:00Z"}}`})
+	clock.Advance(10 * time.Minute)
+	collector.tick(ctx)
+	if got := len(doer.requestsTo(quotaHistoryClaudeProfileURL)); got != 2 {
+		t.Fatalf("profile reads after the early reset = %d, want 2", got)
+	}
+	if len(lifted) != 1 || lifted[0] != auth.ID {
+		t.Fatalf("lifted cooldowns = %v, want [%s]", lifted, auth.ID)
+	}
+	samples := readTestQuotaHistorySamples(t, collector)
+	if got := samples[len(samples)-1].Plan; got != "max5" {
+		t.Fatalf("plan of the sample after the upgrade = %q, want max5", got)
+	}
+}
+
+func TestQuotaHistoryCollector_PollRequestSkipsInterval(t *testing.T) {
+	auth := testQuotaHistoryClaudeAuth()
+	h := &Handler{}
+	collector, clock, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, auth)
+	registerTestQuotaHistoryCollector(t, h, collector)
+	ctx := context.Background()
+	collector.tick(ctx)
+	clock.Advance(time.Minute)
+	collector.tick(ctx)
+	if got := len(doer.requestsTo(quotaHistoryClaudeUsageURL)); got != 1 {
+		t.Fatalf("usage polls before the request = %d, want 1", got)
+	}
+	h.RequestQuotaHistoryPoll(auth.ID)
+	clock.Advance(time.Minute)
+	collector.tick(ctx)
+	clock.Advance(time.Minute)
+	collector.tick(ctx)
+	if got := len(doer.requestsTo(quotaHistoryClaudeUsageURL)); got != 2 {
+		t.Fatalf("usage polls after one request = %d, want 2", got)
+	}
+}
+
+func TestQuotaHistoryResetEarly(t *testing.T) {
+	at := time.UnixMilli(1_000_000)
+	window := func(id string, used float64, resetAt int64) quotaHistoryWindow {
+		return quotaHistoryWindow{ID: id, Used: used, ResetAt: resetAt}
+	}
+	cases := []struct {
+		name              string
+		previous, current []quotaHistoryWindow
+		want              bool
+	}{
+		{"weekly drop before reset", []quotaHistoryWindow{window("seven_day", 54, 2_000_000)}, []quotaHistoryWindow{window("seven_day", 0, 2_000_000)}, true},
+		{"5-hour drop before reset", []quotaHistoryWindow{window("five_hour", 100, 2_000_000)}, []quotaHistoryWindow{window("five_hour", 0, 0)}, true},
+		{"drop after the reset passed", []quotaHistoryWindow{window("five_hour", 100, 900_000)}, []quotaHistoryWindow{window("five_hour", 0, 0)}, false},
+		{"source noise", []quotaHistoryWindow{window("seven_day", 48, 2_000_000)}, []quotaHistoryWindow{window("seven_day", 47, 2_000_000)}, false},
+		{"fable window only", []quotaHistoryWindow{window("seven_day_fable", 80, 2_000_000)}, []quotaHistoryWindow{window("seven_day_fable", 0, 2_000_000)}, false},
+		{"no previous sample", nil, []quotaHistoryWindow{window("seven_day", 0, 2_000_000)}, false},
+	}
+	for _, tc := range cases {
+		if got := quotaHistoryResetEarly(tc.previous, tc.current, at); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestHandlerQuotaHistoryResetCooldownLiftsQuotaCooldown(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	next := time.Now().Add(3 * time.Hour)
+	auth := testQuotaHistoryClaudeAuth()
+	auth.Status = coreauth.StatusError
+	auth.Unavailable = true
+	auth.NextRetryAfter = next
+	auth.Quota = coreauth.QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: next}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("Register: %v", errRegister)
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	listed, _ := manager.GetByID(auth.ID)
+	h.quotaHistoryResetCooldown(context.Background(), listed)
+	updated, _ := manager.GetByID(auth.ID)
+	if views := coreauth.CooldownSnapshotForAuth(updated, time.Now()); len(views) != 0 {
+		t.Fatalf("cooldowns after an early reset = %+v, want none", views)
+	}
+}

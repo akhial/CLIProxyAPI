@@ -296,6 +296,13 @@ Older images stay local until pruned, so rolling back the image is instant.
     account).
   - A manual reset (Claude banked reset, Codex manual reset) moves the reset time;
     the ranking corrects on the next response or poll, within ≤10 min.
+  - A plan upgrade or claimed reset shows up as 5-hour or weekly usage that fell
+    before its reset. On such a sample the collector re-reads the Claude plan and
+    lifts the credential's cooldowns (`ResetQuota`). A Claude usage read or reset claim
+    through the v8 `api-call` endpoint (the UI's refresh) polls that account on the
+    next tick. `GET /v8/management/quota/history` lists each account's plan changes as
+    `plans` (`[t, plan]`), and the UI forecast weighs earlier samples by the earlier
+    plan, so an upgrade shows as a jump.
   - `routing.fable-reset-target: true` (off by default; `fable_reset_target.go`)
     adds a Fable target: among the candidates with a usable Fable reset
     (`reset-grants.json`, `SetFableResetHint`) and Fable left (`seven_day_fable`

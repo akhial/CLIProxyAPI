@@ -85,8 +85,7 @@ func computeQuotaHistoryRoutingStats(samples []quotaHistorySample, now time.Time
 		if first := time.UnixMilli(entry.samples[0].T); first.Before(earliest) {
 			earliest = first
 		}
-		burn[entry.provider] += quotaHistoryConsumed(entry.samples, drainFrom.UnixMilli()) *
-			quotaHistoryPlanUnits(entry.provider, entry.plan) / 100
+		burn[entry.provider] += quotaHistoryConsumed(entry.samples, drainFrom.UnixMilli()) / 100
 	}
 	span := now.Sub(drainFrom)
 	if earliest.After(drainFrom) {
@@ -124,21 +123,33 @@ func computeQuotaHistoryRoutingStats(samples []quotaHistorySample, now time.Time
 }
 
 // quotaHistoryConsumed adds up the weekly percentage points a credential used from
-// fromMs on. A changed weekly reset means the window reset in between, so all of the
-// new window's use counts.
+// fromMs on, in percent of a Pro week, each weighed by the plan of its sample. A
+// changed weekly reset means the window reset in between, so all of the new window's
+// use counts.
 func quotaHistoryConsumed(samples []quotaHistorySample, fromMs int64) float64 {
 	total := 0.0
+	// Samples before the plan is first known count with that first plan.
+	plan := ""
+	for index := range samples {
+		if plan = samples[index].Plan; plan != "" {
+			break
+		}
+	}
 	var prev *quotaHistoryWindow
 	for index := range samples {
+		if samples[index].Plan != "" {
+			plan = samples[index].Plan
+		}
 		weekly := quotaHistorySampleWindow(&samples[index], quotaHistoryWindowSevenDay)
 		if weekly == nil {
 			continue
 		}
 		if prev != nil && samples[index].T >= fromMs {
+			units := quotaHistoryPlanUnits(samples[index].Provider, plan)
 			if quotaHistoryRoundedReset(weekly.ResetAt) != quotaHistoryRoundedReset(prev.ResetAt) {
-				total += weekly.Used
+				total += weekly.Used * units
 			} else if weekly.Used > prev.Used {
-				total += weekly.Used - prev.Used
+				total += (weekly.Used - prev.Used) * units
 			}
 		}
 		prev = weekly

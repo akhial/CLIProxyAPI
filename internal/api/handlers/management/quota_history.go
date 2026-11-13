@@ -27,15 +27,18 @@ type quotaHistoryResponse struct {
 }
 
 type quotaHistoryAccount struct {
-	AuthID    string                     `json:"auth_id"`
-	AuthIndex string                     `json:"auth_index"`
-	FileName  string                     `json:"file_name"`
-	Provider  string                     `json:"provider"`
-	Label     string                     `json:"label"`
-	Email     string                     `json:"email"`
-	Plan      string                     `json:"plan"`
-	Windows   []quotaHistoryWindowSeries `json:"windows"`
-	Routing   *quotaHistoryRouting       `json:"routing,omitempty"`
+	AuthID    string `json:"auth_id"`
+	AuthIndex string `json:"auth_index"`
+	FileName  string `json:"file_name"`
+	Provider  string `json:"provider"`
+	Label     string `json:"label"`
+	Email     string `json:"email"`
+	Plan      string `json:"plan"`
+	// Plans lists each plan from its first sample on, oldest first, so a chart can
+	// weigh samples taken before a plan change by the old plan.
+	Plans   []quotaHistoryPlanChange   `json:"plans,omitempty"`
+	Windows []quotaHistoryWindowSeries `json:"windows"`
+	Routing *quotaHistoryRouting       `json:"routing,omitempty"`
 	// ResetGrants is the saved banked-reset state of a Claude account; absent until read.
 	ResetGrants *quotaHistoryResetGrants `json:"reset_grants,omitempty"`
 }
@@ -67,6 +70,22 @@ type quotaHistoryWindowSeries struct {
 	// instant of the newest sample, from a source that used to report it, that
 	// no longer does. A Claude plan exempt from the 5-hour limit drops five_hour.
 	DroppedAt int64 `json:"dropped_at,omitempty"`
+}
+
+// quotaHistoryPlanChange encodes as [t_ms, plan].
+type quotaHistoryPlanChange struct {
+	T    int64
+	Plan string
+}
+
+// MarshalJSON implements json.Marshaler.
+func (p quotaHistoryPlanChange) MarshalJSON() ([]byte, error) {
+	buf := make([]byte, 0, 32)
+	buf = append(buf, '[')
+	buf = strconv.AppendInt(buf, p.T, 10)
+	buf = append(buf, ',')
+	buf = strconv.AppendQuote(buf, p.Plan)
+	return append(buf, ']'), nil
 }
 
 // quotaHistoryPoint encodes as [t_ms, used_percent, reset_at_ms|null].
@@ -245,6 +264,10 @@ func buildQuotaHistoryAccounts(samples []quotaHistorySample) []quotaHistoryAccou
 			series.newestBySource[sample.Src] = newest
 		}
 		// Samples are sorted, so the last one seen is the most recent.
+		plans := series.account.Plans
+		if count := len(plans); sample.Plan != "" && (count == 0 || plans[count-1].Plan != sample.Plan) {
+			plans = append(plans, quotaHistoryPlanChange{T: sample.T, Plan: sample.Plan})
+		}
 		series.account = quotaHistoryAccount{
 			AuthID:    sample.AuthID,
 			AuthIndex: sample.AuthIndex,
@@ -253,6 +276,7 @@ func buildQuotaHistoryAccounts(samples []quotaHistorySample) []quotaHistoryAccou
 			Label:     sample.Label,
 			Email:     sample.Email,
 			Plan:      sample.Plan,
+			Plans:     plans,
 		}
 		for _, window := range sample.Windows {
 			if window.ID == "" {

@@ -250,3 +250,21 @@ func TestQuotaHistoryPointMarshalJSON(t *testing.T) {
 		t.Fatalf("points = %s, want %s", got, want)
 	}
 }
+
+func TestBuildQuotaHistoryAccounts_PlanChanges(t *testing.T) {
+	weekly := []quotaHistoryWindow{{ID: "seven_day", Used: 10}}
+	samples := []quotaHistorySample{
+		{T: 1000, AuthID: "a", Provider: "claude", Src: "poll", Windows: weekly},
+		{T: 2000, AuthID: "a", Provider: "claude", Plan: "pro", Src: "poll", Windows: weekly},
+		{T: 3000, AuthID: "a", Provider: "claude", Plan: "pro", Src: "poll", Windows: weekly},
+		{T: 4000, AuthID: "a", Provider: "claude", Plan: "max5", Src: "poll", Windows: weekly},
+		{T: 5000, AuthID: "a", Provider: "claude", Src: "header", Windows: weekly},
+	}
+	raw, errMarshal := json.Marshal(buildQuotaHistoryAccounts(samples)[0].Plans)
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	if got, want := string(raw), `[[2000,"pro"],[4000,"max5"]]`; got != want {
+		t.Fatalf("plans = %s, want %s", got, want)
+	}
+}
