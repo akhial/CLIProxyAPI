@@ -246,6 +246,14 @@ func isClaudeResetClaim(method string, target *url.URL) bool {
 	return strings.EqualFold(target.Hostname(), "api.anthropic.com") && claudeResetClaimPath.MatchString(target.Path)
 }
 
+// isClaudeUsageRead reports whether an api-call request reads a Claude account's usage.
+func isClaudeUsageRead(method string, target *url.URL) bool {
+	if target == nil || !strings.EqualFold(method, http.MethodGet) {
+		return false
+	}
+	return strings.EqualFold(target.Hostname(), "api.anthropic.com") && strings.TrimRight(target.Path, "/") == "/api/oauth/usage"
+}
+
 // quotaHistoryResetStore keeps the banked resets of each Claude account in one JSON
 // file next to the quota history. A credential is read when it has no record or after
 // Invalidate, which a reset claim through the management API triggers.

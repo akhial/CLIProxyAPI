@@ -221,6 +221,12 @@ func (h *Handler) APICall(c *gin.Context) {
 	// keeps its old behavior.
 	if auth != nil && c.GetBool(ConfigV8ContextKey) && isClaudeResetClaim(method, parsedURL) {
 		h.InvalidateClaudeResetGrants(auth.ID)
+		h.RequestQuotaHistoryPoll(auth.ID)
+	}
+	// A live usage read (the UI's refresh) is soon recorded too, so the stored history
+	// and plan the page shows on reload catch up with what it just read.
+	if auth != nil && c.GetBool(ConfigV8ContextKey) && isClaudeUsageRead(method, parsedURL) {
+		h.RequestQuotaHistoryPoll(auth.ID)
 	}
 	if errDo != nil {
 		log.WithError(errDo).Debug("management APICall request failed")
