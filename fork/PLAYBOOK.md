@@ -174,6 +174,7 @@ Backend:
 | `internal/config/config_types.go`, `config.example.yaml` | Docs for the new strategy only. |
 | `sdk/api/handlers/openai/openai_handlers.go` | In `OpenAIModels`, the Codex-client branch passes the response through `filterCodexClientModelsByProvider` when `?provider=` is set. |
 | `sdk/api/handlers/openai/codex_client_models.go`, `…_test.go` | `filterCodexClientModelsByProvider` and `TestOpenAIModelsProviderCatalog`. |
+| `internal/api/server_test.go` | `TestModelsWithClientVersionReturnsCodexCatalog` is deleted (an explicit exception to the test rule, at the owner's request). Since v8.0.77 it fails on unmodified upstream: upstream's regenerated `codex_client_models.json` has no service tiers for `gpt-5.5`, but the test still expects the `priority` tier. If upstream fixes or changes the test, drop this deletion and take upstream's version. |
 
 UI:
 
