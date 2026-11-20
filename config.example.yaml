@@ -1281,6 +1281,10 @@ oauth:
       # Preserve the Gemini request body and SDK identity for native Gemini model calls.
       # This uses the caller's User-Agent and X-Goog-Api-Client, skips credential header
       # overrides for these calls, and still applies requests.payload rules.
+      # An authenticated ACP host can send X-ACP-Conversation-ID (UUID) on generation
+      # requests to correlate them. X-ACP-Root-Conversation-ID (UUID) and X-ACP-Step
+      # (unsigned decimal) are optional. The gateway scopes the generated IDs to the
+      # worker key and selected Google credential.
       # preserve-gemini-requests: true
       # sensitive-words:              # optional: words to obfuscate with combining grapheme joiners (U+034F) in system instructions
       #   - "API"

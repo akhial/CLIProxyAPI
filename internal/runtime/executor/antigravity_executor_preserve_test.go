@@ -11,9 +11,12 @@ import (
 
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
@@ -135,5 +138,143 @@ func TestAntigravityPreserveGeminiRequests(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestAntigravityPreservedACPHostSession(t *testing.T) {
+	const (
+		root  = "3dbc79e2-5446-427f-aa8b-09466feadb26"
+		child = "0ac5d42e-97ba-4fcb-a527-8e7ac6e3a5f7"
+	)
+	ctx := context.Background()
+	e := NewAntigravityExecutor(&config.Config{Antigravity: config.AntigravityConfig{PreserveGeminiRequests: true}})
+	model := "gemini-4-neon"
+	build := func(ctx context.Context, worker, account, conversation, rootID, step, text string, stream bool) []byte {
+		t.Helper()
+		auth := &cliproxyauth.Auth{ID: account, Metadata: map[string]any{"project_id": "same-project"}}
+		opts := cliproxyexecutor.Options{
+			SourceFormat: sdktranslator.FormatGemini,
+			Headers:      http.Header{},
+			Metadata:     map[string]any{cliproxyexecutor.CallerScopeMetadataKey: session.CallerScope(worker)},
+		}
+		for name, value := range map[string]string{
+			"X-ACP-Conversation-ID": conversation, "X-ACP-Root-Conversation-ID": rootID, "X-ACP-Step": step,
+		} {
+			if value != "" {
+				opts.Headers.Set(name, value)
+			}
+		}
+		doc := ojson.NewDocString(`{"request":{"contents":[{"role":"user","parts":[{"text":""}]}],"labels":{"custom":"preserved"}}}`)
+		_ = doc.Set("request.contents.0.parts.0.text", text)
+		req, payload, errBuild := e.buildRequestDoc(ctx, auth, "central-token", model, doc, stream, opts, "http://127.0.0.1", "-987")
+		if errBuild != nil {
+			t.Fatal(errBuild)
+		}
+		for name := range opts.Headers {
+			if req.Header.Get(name) != "" {
+				t.Errorf("host header %s was forwarded", name)
+			}
+		}
+		return payload
+	}
+
+	first := build(ctx, "worker-a", "account-a", root, root, "0", "first", true)
+	next := build(ctx, "worker-a", "account-a", root, root, "1", "next", false)
+	for _, path := range []string{"request.sessionId", "request.labels.cascade_id", "request.labels.trajectory_id", "request.labels.root_cascade_id"} {
+		a, b := ojson.GetBytes(first, path).String(), ojson.GetBytes(next, path).String()
+		if a == "" || a != b {
+			t.Errorf("unstable %s across calls: %q vs %q", path, a, b)
+		}
+	}
+	if firstID, nextID := ojson.GetBytes(first, "requestId").String(), ojson.GetBytes(next, "requestId").String(); firstID == "" || firstID == nextID {
+		t.Errorf("request IDs must be distinct: %q vs %q", firstID, nextID)
+	}
+	for path, want := range map[string]string{
+		"request.labels.last_step_index": "1",
+		"request.labels.custom":          "preserved",
+	} {
+		if result := ojson.GetBytes(next, path); result.Type != ojson.String || result.String() != want {
+			t.Errorf("%s = %s, want %q", path, result.Raw, want)
+		}
+	}
+
+	for _, other := range [][]byte{
+		build(ctx, "worker-b", "account-a", root, "", "", "first", true),
+		build(ctx, "worker-a", "account-b", root, "", "", "first", true),
+		build(ctx, "worker-a", "account-a", child, root, "0", "first", true),
+	} {
+		for _, path := range []string{"request.sessionId", "request.labels.cascade_id", "request.labels.trajectory_id"} {
+			if value := ojson.GetBytes(other, path).String(); value == "" || value == ojson.GetBytes(first, path).String() {
+				t.Errorf("%s must be distinct across sessions, workers and accounts: %q", path, value)
+			}
+		}
+	}
+	branch := build(ctx, "worker-a", "account-a", child, root, "0", "branch", true)
+	if rootID := ojson.GetBytes(branch, "request.labels.root_cascade_id").String(); rootID != ojson.GetBytes(first, "request.labels.cascade_id").String() {
+		t.Errorf("branch root did not resolve to its root cascade: %q", rootID)
+	}
+	if _, errCascade := uuid.Parse(ojson.GetBytes(first, "request.labels.cascade_id").String()); errCascade != nil {
+		t.Fatalf("cascade ID: %v", errCascade)
+	}
+
+	unmarked := build(ctx, "worker-a", "account-a", "", "", "", "unmarked", true)
+	if ojson.GetBytes(unmarked, "request.sessionId").String() != "-987" || ojson.GetBytes(unmarked, "request.labels.trajectory_id").Exists() {
+		t.Errorf("unexpected ACP metadata on an unmarked request: %s", unmarked)
+	}
+	finalized := helps.WithPayloadFinalizer(ctx, func(body []byte) []byte {
+		doc := ojson.NewDoc(body)
+		if !doc.Get("request.labels.trajectory_id").Exists() {
+			t.Error("trajectory label must be set before payload rules")
+		}
+		_ = doc.Delete("request.labels")
+		_ = doc.Set("request.sessionId", "configured")
+		return doc.Bytes()
+	})
+	body := build(finalized, "worker-a", "account-a", root, root, "0", "first", true)
+	if ojson.GetBytes(body, "request.labels").Exists() || ojson.GetBytes(body, "request.sessionId").String() != "configured" {
+		t.Errorf("payload rules must run last: %s", body)
+	}
+}
+
+func TestAntigravityRejectsInvalidACPHostHeaders(t *testing.T) {
+	const validID = "3dbc79e2-5446-427f-aa8b-09466feadb26"
+	e := NewAntigravityExecutor(&config.Config{Antigravity: config.AntigravityConfig{PreserveGeminiRequests: true}})
+	auth := &cliproxyauth.Auth{ID: "account", Metadata: map[string]any{"project_id": "project"}}
+	for _, tc := range []struct {
+		name         string
+		conversation []string
+		root         string
+		step         string
+		caller       string
+	}{
+		{name: "step without conversation", step: "0", caller: "worker"},
+		{name: "duplicate conversation", conversation: []string{validID, validID}, caller: "worker"},
+		{name: "malformed conversation", conversation: []string{"a"}, caller: "worker"},
+		{name: "malformed root", conversation: []string{validID}, root: "a", caller: "worker"},
+		{name: "negative step", conversation: []string{validID}, step: "-1", caller: "worker"},
+		{name: "unauthenticated caller", conversation: []string{validID}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			headers := http.Header{}
+			for _, conversation := range tc.conversation {
+				headers.Add("X-ACP-Conversation-ID", conversation)
+			}
+			if tc.root != "" {
+				headers.Set("X-ACP-Root-Conversation-ID", tc.root)
+			}
+			if tc.step != "" {
+				headers.Set("X-ACP-Step", tc.step)
+			}
+			opts := cliproxyexecutor.Options{
+				SourceFormat: sdktranslator.FormatGemini,
+				Headers:      headers,
+				Metadata:     map[string]any{cliproxyexecutor.CallerScopeMetadataKey: session.CallerScope(tc.caller)},
+			}
+			req, _, errBuild := e.buildRequestDoc(context.Background(), auth, "token", "gemini-4-neon", ojson.NewDocString(`{"request":{}}`), true, opts, "http://127.0.0.1")
+			status, ok := errBuild.(interface{ StatusCode() int })
+			if req != nil || !ok || status.StatusCode() != http.StatusBadRequest {
+				t.Fatalf("expected request-scoped HTTP 400, got %v, %v", req, errBuild)
+			}
+		})
 	}
 }
