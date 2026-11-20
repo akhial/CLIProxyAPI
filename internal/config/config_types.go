@@ -258,6 +258,9 @@ type ProxyConnectionPoolConfig struct {
 
 // AntigravityConfig configures provider-wide Antigravity request behavior.
 type AntigravityConfig struct {
+	// PreserveGeminiRequests keeps native Gemini payloads and client headers on Gemini model routes.
+	PreserveGeminiRequests bool `yaml:"preserve-gemini-requests,omitempty" json:"preserve-gemini-requests,omitempty"`
+
 	// SensitiveWords is a list of words to obfuscate with invisible combining grapheme joiners in system instructions.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
 

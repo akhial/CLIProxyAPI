@@ -52,6 +52,7 @@ func (e *HTTPStatusError) StatusCode() int {
 
 // AntigravityAuth handles Antigravity OAuth authentication
 type AntigravityAuth struct {
+	userAgent  string
 	httpClient *http.Client
 }
 
@@ -60,20 +61,22 @@ func NewAntigravityAuth(cfg *config.Config, httpClient *http.Client) *Antigravit
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	if httpClient != nil {
-		return &AntigravityAuth{httpClient: httpClient}
+	if httpClient == nil {
+		httpClient = util.SetProxy(&cfg.SDKConfig, &http.Client{})
 	}
-	return &AntigravityAuth{
-		httpClient: util.SetProxy(&cfg.SDKConfig, &http.Client{}),
+	auth := &AntigravityAuth{httpClient: httpClient}
+	if cfg.Antigravity.PreserveGeminiRequests {
+		auth.userAgent = misc.AntigravityGatewayUserAgent
 	}
+	return auth
 }
 
 func (o *AntigravityAuth) shortUserAgent() string {
-	return misc.AntigravityRequestUserAgent("")
+	return misc.AntigravityRequestUserAgent(o.userAgent)
 }
 
 func (o *AntigravityAuth) nodeUserAgent() string {
-	return misc.AntigravityOnboardUserUserAgent("")
+	return misc.AntigravityOnboardUserUserAgent(o.userAgent)
 }
 
 func antigravityLoadCodeAssistMetadata() map[string]string {
@@ -83,6 +86,9 @@ func antigravityLoadCodeAssistMetadata() map[string]string {
 }
 
 func antigravityControlPlaneMetadata(userAgent string) map[string]string {
+	if userAgent == misc.AntigravityGatewayUserAgent {
+		return map[string]string{"ide_type": "ANTIGRAVITY"}
+	}
 	return map[string]string{
 		"ide_type":    "ANTIGRAVITY",
 		"ide_version": misc.AntigravityVersionFromUserAgent(userAgent),

@@ -18,18 +18,92 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 )
 
+func (e *AntigravityExecutor) preserveGeminiRequest(model string, opts cliproxyexecutor.Options) bool {
+	return e.cfg != nil && e.cfg.Antigravity.PreserveGeminiRequests &&
+		opts.SourceFormat == sdktranslator.FormatGemini && strings.HasPrefix(model, "gemini-")
+}
+
+// translatePayload returns the Cloud Code envelope used as the baseline for payload rules.
+func (e *AntigravityExecutor) translatePayload(ctx context.Context, model string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) (*ojson.Doc, []byte, error) {
+	if e.preserveGeminiRequest(model, opts) {
+		if !ojson.ValidBytes(req.Payload) || !ojson.ParseBytes(req.Payload).IsObject() {
+			return nil, nil, statusErr{code: http.StatusBadRequest, msg: "expected a Gemini request object"}
+		}
+		doc := ojson.NewDocString("{}")
+		if err := doc.SetRawBytes("request", req.Payload); err != nil {
+			return nil, nil, err
+		}
+		return doc, doc.Bytes(), nil
+	}
+	info, _ := cliproxyauth.ResolvedModelInfo(req)
+	envelope := sdktranslator.RequestEnvelope{Format: opts.SourceFormat, Model: model, Stream: stream, Body: req.Payload, ModelInfo: info}
+	translated := helps.TranslateRequestEnvelopeWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, opts.SourceFormat, sdktranslator.FormatAntigravity, envelope)
+	return ojson.NewDoc(translated.Body), translated.Body, translated.Err
+}
+
+func (e *AntigravityExecutor) prepareGenerationDoc(ctx context.Context, doc *ojson.Doc, model string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, streamingEndpoint, useCredits bool) (antigravityReasoningReplayScope, error) {
+	var scope antigravityReasoningReplayScope
+	preserve := e.preserveGeminiRequest(model, opts)
+	if !preserve || thinking.HasThinkingSuffix(req.Model) {
+		if err := helps.ApplyRequestThinkingDoc(doc, req, opts, opts.SourceFormat.String(), "antigravity", e.Identifier()); err != nil {
+			return scope, err
+		}
+	}
+	if !preserve {
+		e.obfuscateSensitiveWordsDoc(doc)
+		sanitizeAntigravityGeminiRequestSignaturesDoc(model, doc)
+		if streamingEndpoint {
+			_ = doc.Delete("request.stream")
+		}
+	}
+	if useCredits && injectEnabledCreditTypesDoc(doc) {
+		helps.MarkCreditsUsed(ctx)
+	}
+	if preserve {
+		return scope, nil
+	}
+	if antigravityUsesReasoningReplayCache(model) {
+		var err error
+		scope, _, err = prepareAntigravityGeminiReasoningReplayPayloadDoc(ctx, model, req, opts, doc)
+		if err != nil {
+			return scope, err
+		}
+	}
+	ensureAntigravityGeminiBoundaryUserContentDoc(model, doc)
+	return scope, nil
+}
+
+// Copy only client library identity. Authorization and routing belong to the gateway.
+func (e *AntigravityExecutor) setAntigravityRequestHeaders(r *http.Request, auth *cliproxyauth.Auth, model string, opts cliproxyexecutor.Options) {
+	if !e.preserveGeminiRequest(model, opts) {
+		r.Header.Set("User-Agent", resolveUserAgent(auth))
+		if auth != nil {
+			util.ApplyCustomHeadersFromAttrs(r, auth.Attributes)
+		}
+		return
+	}
+	// An empty User-Agent suppresses the Go transport default when the caller omitted it.
+	r.Header.Set("User-Agent", opts.Headers.Get("User-Agent"))
+	if value := opts.Headers.Get("X-Goog-Api-Client"); value != "" {
+		r.Header.Set("X-Goog-Api-Client", value)
+	}
+}
+
 func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, payload []byte, stream bool, alt, baseURL string, derivedSessionIDs ...string) (*http.Request, error) {
 	doc := ojson.NewDoc(payload)
-	httpReq, _, err := e.buildRequestDoc(ctx, auth, token, modelName, doc, stream, alt, baseURL, derivedSessionIDs...)
+	httpReq, _, err := e.buildRequestDoc(ctx, auth, token, modelName, doc, stream, cliproxyexecutor.Options{Alt: alt}, baseURL, derivedSessionIDs...)
 	return httpReq, err
 }
 
-func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, doc *ojson.Doc, stream bool, alt, baseURL string, derivedSessionIDs ...string) (*http.Request, []byte, error) {
+func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, doc *ojson.Doc, stream bool, opts cliproxyexecutor.Options, baseURL string, derivedSessionIDs ...string) (*http.Request, []byte, error) {
 	if token == "" {
 		return nil, nil, statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 	}
@@ -41,6 +115,7 @@ func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliprox
 	if base == "" {
 		base = resolveAntigravityRequestBaseURL(auth)
 	}
+	alt := opts.Alt
 	path := antigravityGeneratePath
 	if stream {
 		path = antigravityStreamPath
@@ -64,7 +139,58 @@ func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliprox
 	if errProject != nil {
 		return nil, nil, errProject
 	}
-	geminiToAntigravityDoc(doc, modelName, projectID, derivedSessionIDs...)
+	setAntigravityEnvelopeDoc(doc, modelName, projectID, derivedSessionIDs...)
+	if !e.preserveGeminiRequest(modelName, opts) {
+		normalizeAntigravityGenerationDoc(modelName, doc)
+	}
+	helps.FinalizePayloadDoc(ctx, doc)
+	finalPayload := doc.Bytes()
+	var (
+		bodyReader io.Reader = bytes.NewReader(finalPayload)
+		payloadLog []byte
+	)
+	if e.cfg != nil && e.cfg.RequestLog {
+		payloadLog = append([]byte(nil), finalPayload...)
+	}
+
+	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bodyReader)
+	if errReq != nil {
+		return nil, nil, errReq
+	}
+	// Deliberately no httpReq.Close: the native Antigravity client omits the
+	// Connection header and keeps its HTTP/1.1 connections alive, so forcing
+	// "Connection: close" would both deviate from that fingerprint and defeat the
+	// shared connection pool by discarding every established TCP + TLS session.
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	if host := resolveHost(base); host != "" {
+		httpReq.Host = host
+	}
+	e.setAntigravityRequestHeaders(httpReq, auth, modelName, opts)
+
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+		URL:       requestURL.String(),
+		Method:    http.MethodPost,
+		Headers:   httpReq.Header.Clone(),
+		Body:      payloadLog,
+		Provider:  e.Identifier(),
+		AuthID:    authID,
+		AuthLabel: authLabel,
+		AuthType:  authType,
+		AuthValue: authValue,
+	})
+
+	return httpReq, finalPayload, nil
+}
+
+func normalizeAntigravityGenerationDoc(modelName string, doc *ojson.Doc) {
+	cleanAntigravityToolAndSafetyConfig(doc)
 	promptStructuredOutput := helps.PrepareAntigravityClaudeStructuredOutputDoc(modelName, doc)
 
 	// Cap maxOutputTokens to model's max_completion_tokens from registry
@@ -90,55 +216,6 @@ func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliprox
 	}
 
 	applyAntigravityNativeSignatureReplayIfNeededDoc(modelName, doc)
-	helps.FinalizePayloadDoc(ctx, doc)
-	finalPayload := doc.Bytes()
-	var (
-		bodyReader io.Reader = bytes.NewReader(finalPayload)
-		payloadLog []byte
-	)
-	if e.cfg != nil && e.cfg.RequestLog {
-		payloadLog = append([]byte(nil), finalPayload...)
-	}
-
-	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bodyReader)
-	if errReq != nil {
-		return nil, nil, errReq
-	}
-	// Deliberately no httpReq.Close: the native Antigravity client omits the
-	// Connection header and keeps its HTTP/1.1 connections alive, so forcing
-	// "Connection: close" would both deviate from that fingerprint and defeat the
-	// shared connection pool by discarding every established TCP + TLS session.
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
-	if host := resolveHost(base); host != "" {
-		httpReq.Host = host
-	}
-	var attrs map[string]string
-	if auth != nil {
-		attrs = auth.Attributes
-	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
-
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       requestURL.String(),
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      payloadLog,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
-	return httpReq, finalPayload, nil
 }
 
 // sanitizeAntigravityRequestSchemas cleans the JSON schemas carried by an Antigravity request.
@@ -717,11 +794,12 @@ func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 
 func geminiToAntigravity(modelName string, payload []byte, projectID string, derivedSessionIDs ...string) []byte {
 	doc := ojson.NewDoc(payload)
-	geminiToAntigravityDoc(doc, modelName, projectID, derivedSessionIDs...)
+	setAntigravityEnvelopeDoc(doc, modelName, projectID, derivedSessionIDs...)
+	cleanAntigravityToolAndSafetyConfig(doc)
 	return doc.Bytes()
 }
 
-func geminiToAntigravityDoc(doc *ojson.Doc, modelName string, projectID string, derivedSessionIDs ...string) {
+func setAntigravityEnvelopeDoc(doc *ojson.Doc, modelName string, projectID string, derivedSessionIDs ...string) {
 	if doc == nil {
 		return
 	}
@@ -758,7 +836,9 @@ func geminiToAntigravityDoc(doc *ojson.Doc, modelName string, projectID string, 
 		}
 		_ = doc.Set("request.sessionId", sessionID)
 	}
+}
 
+func cleanAntigravityToolAndSafetyConfig(doc *ojson.Doc) {
 	_ = doc.Delete("request.safetySettings")
 	if toolConfig := doc.Get("toolConfig"); toolConfig.Exists() && !doc.Get("request.toolConfig").Exists() {
 		_ = doc.SetRawBytes("request.toolConfig", []byte(toolConfig.Raw))

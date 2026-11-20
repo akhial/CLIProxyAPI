@@ -1278,6 +1278,10 @@ oauth:
 
     # Antigravity provider behavior.
     antigravity:
+      # Preserve the Gemini request body and SDK identity for native Gemini model calls.
+      # This uses the caller's User-Agent and X-Goog-Api-Client, skips credential header
+      # overrides for these calls, and still applies requests.payload rules.
+      # preserve-gemini-requests: true
       # sensitive-words:              # optional: words to obfuscate with combining grapheme joiners (U+034F) in system instructions
       #   - "API"
       #   - "proxy"

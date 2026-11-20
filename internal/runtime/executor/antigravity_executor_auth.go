@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/json"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -241,7 +241,7 @@ func (e *AntigravityExecutor) fetchAntigravityProjectID(ctx context.Context, aut
 	defer cancelAcquisition()
 	httpClient := newAntigravityHTTPClient(acquisitionCtx, e.cfg, auth, 0)
 	tracedClient := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "project_discovery")
-	projectID, errFetch := sdkAuth.FetchAntigravityProjectID(acquisitionCtx, token, tracedClient)
+	projectID, errFetch := antigravity.NewAntigravityAuth(e.cfg, tracedClient).FetchProjectID(acquisitionCtx, token)
 	if errFetch != nil {
 		return "", errFetch
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -92,13 +93,21 @@ func (h antigravityModelCapabilityHints) clone() antigravityModelCapabilityHints
 	return antigravityModelCapabilityHints{WebSearchModelIDs: maps.Clone(h.WebSearchModelIDs), ModelIDs: maps.Clone(h.ModelIDs), revision: h.revision}
 }
 
+// A background probe belongs to the gateway and has no inbound client headers.
+func (s *Service) antigravityProbeUserAgent() string {
+	if cfg := s.currentConfig(); cfg != nil && cfg.Antigravity.PreserveGeminiRequests {
+		return misc.AntigravityGatewayUserAgent
+	}
+	return antigravityModelUserAgent()
+}
+
 // antigravityCapabilityKey isolates catalogs by account, project, route and client
 // fingerprint. Token rotation alone does not invalidate a successful catalog.
 func (s *Service) antigravityCapabilityKey(auth *coreauth.Auth) string {
 	if auth == nil {
 		return ""
 	}
-	return antigravityCapabilityKeyForRoute(auth, antigravityModelBaseURLs(auth)[0], s.antigravityModelFetchProxyURL(auth), antigravityModelUserAgent())
+	return antigravityCapabilityKeyForRoute(auth, antigravityModelBaseURLs(auth)[0], s.antigravityModelFetchProxyURL(auth), s.antigravityProbeUserAgent())
 }
 
 func antigravityCapabilityKeyForRoute(auth *coreauth.Auth, endpoint, proxy, userAgent string) string {
@@ -116,7 +125,7 @@ func (s *Service) cachedAntigravityHints(auth *coreauth.Auth) antigravityModelCa
 		return antigravityModelCapabilityHints{}
 	}
 	endpoint := antigravityModelBaseURLs(auth)[0]
-	key := antigravityCapabilityKeyForRoute(auth, endpoint, s.antigravityModelFetchProxyURL(auth), antigravityModelUserAgent())
+	key := antigravityCapabilityKeyForRoute(auth, endpoint, s.antigravityModelFetchProxyURL(auth), s.antigravityProbeUserAgent())
 	return s.cachedAntigravityHintsForKey(auth, endpoint, key)
 }
 
@@ -248,7 +257,7 @@ func (s *Service) fetchAntigravityModelCapabilityHints(ctx context.Context, auth
 		ctx = context.Background()
 	}
 	baseURLs, proxyURL := antigravityModelBaseURLs(auth), s.antigravityModelFetchProxyURL(auth)
-	userAgent := antigravityModelUserAgent()
+	userAgent := s.antigravityProbeUserAgent()
 	cacheKey := antigravityCapabilityKeyForRoute(auth, baseURLs[0], proxyURL, userAgent)
 	accessToken, _ := auth.Metadata["access_token"].(string)
 	accessToken = strings.TrimSpace(accessToken)
@@ -515,6 +524,18 @@ func (s *Service) antigravityModelsForHintsWithConfig(auth *coreauth.Auth, hints
 		cfg = &config.Config{}
 	}
 	models := filterAntigravityModels(registry.GetAntigravityModels(), hints)
+	if cfg.Antigravity.PreserveGeminiRequests {
+		// Native clients can select models released after the embedded catalog.
+		missing := maps.Clone(hints.ModelIDs)
+		for _, model := range models {
+			delete(missing, normalizeAntigravityFetchedModelID(model.ID))
+		}
+		for _, id := range slices.Sorted(maps.Keys(missing)) {
+			if strings.HasPrefix(id, "gemini-") {
+				models = append(models, &ModelInfo{ID: id, Name: id, Object: "model", OwnedBy: "antigravity", Type: "antigravity"})
+			}
+		}
+	}
 	models = applyAntigravityFetchedModelCapabilities(models, hints)
 	excluded := cfg.OAuthExcludedModels[coreauth.OAuthModelAliasChannel(auth.Provider, auth.AuthKind())]
 	if value := strings.TrimSpace(auth.Attributes["excluded_models"]); value != "" {

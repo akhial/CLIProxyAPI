@@ -122,6 +122,9 @@ func AntigravityLatestVersion() string {
 	return antigravityFallbackVersion
 }
 
+// AntigravityGatewayUserAgent identifies requests initiated by the gateway itself.
+const AntigravityGatewayUserAgent = "CLIProxyAPI"
+
 // AntigravityUserAgent returns the User-Agent string used by the Antigravity Hub family.
 func AntigravityUserAgent() string {
 	version := AntigravityLatestVersion()
