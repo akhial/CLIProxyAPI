@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/MoeForge/moego/json"
@@ -276,5 +277,75 @@ func TestAntigravityRejectsInvalidACPHostHeaders(t *testing.T) {
 				t.Fatalf("expected request-scoped HTTP 400, got %v, %v", req, errBuild)
 			}
 		})
+	}
+}
+
+func TestAntigravityStockACPConversation(t *testing.T) {
+	const conversation = "d0092ae5-5db7-42a5-989f-cc5e54df24a6"
+	const other = "c784c133-5d3d-4197-a75e-c7a67dd2899d"
+	const info = "<user_information>\nCommand Working Directory: /fixture/workspace\n" +
+		"App Data Directory: /fixture/data\nConversation ID: " + conversation + "\n" +
+		"Artifact Directory Path: /fixture/data/brain/" + conversation + "\n</user_information>"
+	e := NewAntigravityExecutor(&config.Config{Antigravity: config.AntigravityConfig{PreserveGeminiRequests: true}})
+	auth := &cliproxyauth.Auth{ID: "account", Metadata: map[string]any{"project_id": "project"}}
+	ctx := context.Background()
+	build := func(system, explicit, native, worker string) *ojson.Doc {
+		t.Helper()
+		doc := ojson.NewDocString(`{"request":{"systemInstruction":{"parts":[{}]},"contents":[{"role":"user","parts":[{}]}]}}`)
+		_ = doc.Set("request.systemInstruction.parts.0.text", system)
+		_ = doc.Set("request.contents.0.parts.0.text", info)
+		if native != "" {
+			_ = doc.Set("request.sessionId", native)
+		}
+		opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini, Headers: http.Header{},
+			Metadata: map[string]any{cliproxyexecutor.CallerScopeMetadataKey: session.CallerScope(worker)}}
+		if explicit != "" {
+			opts.Headers.Set("X-ACP-Conversation-ID", explicit)
+		}
+		_, payload, errBuild := e.buildRequestDoc(ctx, auth, "fixture-token", "gemini-4-neon", doc, true, opts, "http://127.0.0.1", "-987")
+		if errBuild != nil {
+			t.Fatal(errBuild)
+		}
+		res := ojson.NewDoc(payload)
+		if res.Get("request.systemInstruction.parts.0.text").String() != system || res.Get("request.contents.0.parts.0.text").String() != info {
+			t.Error("input text changed")
+		}
+		if explicit == "" && res.Get("request.labels").Exists() {
+			t.Error("discovery should only supply a session ID")
+		}
+		return res
+	}
+	id := func(doc *ojson.Doc) string { return doc.Get("request.sessionId").String() }
+	fromHeader := id(build("", conversation, "", "worker"))
+	fromOther := id(build("", other, "", "worker"))
+	for _, tc := range []struct{ name, system, header, native, worker, want string }{
+		{"stock prompt", "prefix\n" + info, "", "", "worker", fromHeader},
+		{"custom agent", info + "\n<messaging>more</messaging>", "", "", "worker", fromHeader},
+		{"title or user text only", "Make a title", "", "", "worker", "-987"},
+		{"malformed ID", strings.ReplaceAll(info, conversation, "bad-id"), "", "", "worker", "-987"},
+		{"artifact mismatch", strings.Replace(info, "/brain/"+conversation, "/brain/"+other, 1), "", "", "worker", "-987"},
+		{"duplicate blocks", info + "\n" + info, "", "", "worker", "-987"},
+		{"duplicate conversation lines", strings.Replace(info, "App Data Directory:", "Conversation ID: "+other+"\nApp Data Directory:", 1), "", "", "worker", "-987"},
+		{"native session", info, "", "native", "worker", "native"},
+		{"host override", info, other, "native", "worker", fromOther},
+		{"unscoped caller", info, "", "", "", "-987"},
+		{"separate worker", info, "", "", "other-worker", id(build("", conversation, "", "other-worker"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := id(build(tc.system, tc.header, tc.native, tc.worker)); got != tc.want {
+				t.Errorf("session = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	ctx = helps.WithPayloadFinalizer(ctx, func(body []byte) []byte {
+		doc := ojson.NewDoc(body)
+		if id(doc) != fromHeader {
+			t.Error("payload rules did not receive the discovered session")
+		}
+		_ = doc.Delete("request.sessionId")
+		return doc.Bytes()
+	})
+	if build(info, "", "", "worker").Get("request.sessionId").Exists() {
+		t.Error("session ID was restored after filtering")
 	}
 }

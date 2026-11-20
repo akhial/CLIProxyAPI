@@ -139,12 +139,14 @@ func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliprox
 	if errProject != nil {
 		return nil, nil, errProject
 	}
-	setAntigravityEnvelopeDoc(doc, modelName, projectID, derivedSessionIDs...)
-	if e.preserveGeminiRequest(modelName, opts) {
+	preserve := e.preserveGeminiRequest(modelName, opts)
+	if preserve {
 		if errSession := helps.ApplyAntigravityACPSessionDoc(doc, opts, auth, projectID); errSession != nil {
 			return nil, nil, errSession
 		}
-	} else {
+	}
+	setAntigravityEnvelopeDoc(doc, modelName, projectID, derivedSessionIDs...)
+	if !preserve {
 		normalizeAntigravityGenerationDoc(modelName, doc)
 	}
 	helps.FinalizePayloadDoc(ctx, doc)

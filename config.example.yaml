@@ -1281,10 +1281,15 @@ oauth:
       # Preserve the Gemini request body and SDK identity for native Gemini model calls.
       # This uses the caller's User-Agent and X-Goog-Api-Client, skips credential header
       # overrides for these calls, and still applies requests.payload rules.
-      # An authenticated ACP host can send X-ACP-Conversation-ID (UUID) on generation
-      # requests to correlate them. X-ACP-Root-Conversation-ID (UUID) and X-ACP-Step
-      # (unsigned decimal) are optional. The gateway scopes the generated IDs to the
-      # worker key and selected Google credential.
+      # In stock agy ACP 1.5.12 the main system instruction includes the conversation
+      # UUID and its artifact directory. When both agree, the gateway derives a session
+      # ID scoped to the worker key and selected Google credential. Titles use the fallback.
+      # To use this from T3 Code, select Gemini API key in the Antigravity provider,
+      # enter the worker's proxy key and set GOOGLE_GEMINI_BASE_URL in that provider's
+      # environment to the gateway origin (e.g. http://127.0.0.1:8317 on the gateway host).
+      # An explicit X-ACP-Conversation-ID (UUID) from the host takes precedence.
+      # X-ACP-Root-Conversation-ID (UUID) and X-ACP-Step (unsigned decimal) are optional
+      # with that header. Only explicit host metadata adds trajectory labels.
       # preserve-gemini-requests: true
       # sensitive-words:              # optional: words to obfuscate with combining grapheme joiners (U+034F) in system instructions
       #   - "API"
