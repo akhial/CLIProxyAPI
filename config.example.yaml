@@ -1283,13 +1283,16 @@ oauth:
       # overrides for these calls, and still applies requests.payload rules.
       # In stock agy ACP 1.5.12 the main system instruction includes the conversation
       # UUID and its artifact directory. When both agree, the gateway derives a session
-      # ID scoped to the worker key and selected Google credential. Titles use the fallback.
+      # ID and a cascade_id correlation label scoped to the worker key and selected
+      # Google credential. An existing label is preserved. Titles use the fallback.
+      # For these ACP calls, a single function-only group expands to one tool per
+      # declaration. Tool names, schemas, order and argument constraints are preserved.
       # To use this from T3 Code, select Gemini API key in the Antigravity provider,
       # enter the worker's proxy key and set GOOGLE_GEMINI_BASE_URL in that provider's
       # environment to the gateway origin (e.g. http://127.0.0.1:8317 on the gateway host).
       # An explicit X-ACP-Conversation-ID (UUID) from the host takes precedence.
       # X-ACP-Root-Conversation-ID (UUID) and X-ACP-Step (unsigned decimal) are optional
-      # with that header. Only explicit host metadata adds trajectory labels.
+      # with that header. See examples/antigravity-acp for a selectable ACP tool profile.
       # preserve-gemini-requests: true
       # sensitive-words:              # optional: words to obfuscate with combining grapheme joiners (U+034F) in system instructions
       #   - "API"

@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+: "${AGY_BINARY:?Set AGY_BINARY to the path of the official Antigravity executable}"
+if [ "$AGY_BINARY" -ef "$0" ]; then
+    echo "AGY_BINARY points to the profile launcher itself" >&2
+    exit 1
+fi
+
+# T3 also invokes this executable for version checks and account setup.
+if [ "${1-}" = acp ] && [ -n "${GEMINI_API_KEY:-}" ]; then
+    for arg do
+        case "$arg" in
+            --agent|--agent=*) exec "$AGY_BINARY" "$@" ;;
+        esac
+    done
+    set -- "$@" --agent acp-tools
+fi
+exec "$AGY_BINARY" "$@"

@@ -41,6 +41,9 @@ func (e *AntigravityExecutor) translatePayload(ctx context.Context, model string
 		if err := doc.SetRawBytes("request", req.Payload); err != nil {
 			return nil, nil, err
 		}
+		if err := helps.GroupAntigravityACPFunctions(doc); err != nil {
+			return nil, nil, fmt.Errorf("group ACP function declarations: %w", err)
+		}
 		return doc, doc.Bytes(), nil
 	}
 	info, _ := cliproxyauth.ResolvedModelInfo(req)

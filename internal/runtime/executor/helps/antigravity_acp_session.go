@@ -64,10 +64,13 @@ func ApplyAntigravityACPSessionDoc(doc *ojson.Doc, opts executor.Options, accoun
 	scope := strings.Join([]string{caller, account.ID, projectID, email}, "\x00")
 	identity := scope + "\x00" + conversation
 	_ = doc.Set("request.sessionId", antigravitySessionID("acp\x00"+identity))
+	labels := doc.Get("request.labels")
+	if explicit || !labels.Exists() || (labels.IsObject() && !labels.Get("cascade_id").Exists()) {
+		_ = doc.Set("request.labels.cascade_id", stableProviderSessionUUID("antigravity", "acp-conversation", identity))
+	}
 	if !explicit {
 		return nil
 	}
-	_ = doc.Set("request.labels.cascade_id", stableProviderSessionUUID("antigravity", "acp-conversation", identity))
 	_ = doc.Set("request.labels.trajectory_id", stableProviderSessionUUID("antigravity", "acp-trajectory", identity))
 	if root != "" {
 		_ = doc.Set("request.labels.root_cascade_id", stableProviderSessionUUID("antigravity", "acp-conversation", scope+"\x00"+root))

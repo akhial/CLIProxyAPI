@@ -289,13 +289,16 @@ func TestAntigravityStockACPConversation(t *testing.T) {
 	e := NewAntigravityExecutor(&config.Config{Antigravity: config.AntigravityConfig{PreserveGeminiRequests: true}})
 	auth := &cliproxyauth.Auth{ID: "account", Metadata: map[string]any{"project_id": "project"}}
 	ctx := context.Background()
-	build := func(system, explicit, native, worker string) *ojson.Doc {
+	build := func(system, explicit, native, worker string, initialLabels ...string) *ojson.Doc {
 		t.Helper()
 		doc := ojson.NewDocString(`{"request":{"systemInstruction":{"parts":[{}]},"contents":[{"role":"user","parts":[{}]}]}}`)
 		_ = doc.Set("request.systemInstruction.parts.0.text", system)
 		_ = doc.Set("request.contents.0.parts.0.text", info)
 		if native != "" {
 			_ = doc.Set("request.sessionId", native)
+		}
+		if len(initialLabels) != 0 {
+			_ = doc.SetRaw("request.labels", initialLabels[0])
 		}
 		opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini, Headers: http.Header{},
 			Metadata: map[string]any{cliproxyexecutor.CallerScopeMetadataKey: session.CallerScope(worker)}}
@@ -310,13 +313,11 @@ func TestAntigravityStockACPConversation(t *testing.T) {
 		if res.Get("request.systemInstruction.parts.0.text").String() != system || res.Get("request.contents.0.parts.0.text").String() != info {
 			t.Error("input text changed")
 		}
-		if explicit == "" && res.Get("request.labels").Exists() {
-			t.Error("discovery should only supply a session ID")
-		}
 		return res
 	}
 	id := func(doc *ojson.Doc) string { return doc.Get("request.sessionId").String() }
-	fromHeader := id(build("", conversation, "", "worker"))
+	host := build("", conversation, "", "worker")
+	fromHeader := id(host)
 	fromOther := id(build("", other, "", "worker"))
 	for _, tc := range []struct{ name, system, header, native, worker, want string }{
 		{"stock prompt", "prefix\n" + info, "", "", "worker", fromHeader},
@@ -332,10 +333,30 @@ func TestAntigravityStockACPConversation(t *testing.T) {
 		{"separate worker", info, "", "", "other-worker", id(build("", conversation, "", "other-worker"))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := id(build(tc.system, tc.header, tc.native, tc.worker)); got != tc.want {
+			res := build(tc.system, tc.header, tc.native, tc.worker)
+			if got := id(res); got != tc.want {
 				t.Errorf("session = %q, want %q", got, tc.want)
 			}
+			if tc.header != "" {
+				return
+			}
+			labels := res.Get("request.labels")
+			if tc.want == "-987" || tc.native != "" {
+				if labels.Exists() {
+					t.Error("unexpected labels without a discovered conversation")
+				}
+				return
+			}
+			want := build("", conversation, "", tc.worker).Get("request.labels.cascade_id").String()
+			if len(labels.Map()) != 1 || want == "" || labels.Get("cascade_id").String() != want {
+				t.Error("discovery must supply only the worker-scoped conversation label")
+			}
 		})
+	}
+	for _, labels := range []string{`{"cascade_id":"provided","other":"value"}`, `"opaque"`} {
+		if got := build(info, "", "", "worker", labels).Get("request.labels").Raw; got != labels {
+			t.Errorf("existing labels = %s, want %s", got, labels)
+		}
 	}
 	ctx = helps.WithPayloadFinalizer(ctx, func(body []byte) []byte {
 		doc := ojson.NewDoc(body)
@@ -343,9 +364,57 @@ func TestAntigravityStockACPConversation(t *testing.T) {
 			t.Error("payload rules did not receive the discovered session")
 		}
 		_ = doc.Delete("request.sessionId")
+		_ = doc.Delete("request.labels")
 		return doc.Bytes()
 	})
-	if build(info, "", "", "worker").Get("request.sessionId").Exists() {
-		t.Error("session ID was restored after filtering")
+	res := build(info, "", "", "worker")
+	if res.Get("request.sessionId").Exists() || res.Get("request.labels").Exists() {
+		t.Error("correlation fields were restored after filtering")
+	}
+}
+
+func TestAntigravityACPToolDeclarations(t *testing.T) {
+	const info = "<user_information>\nApp Data Directory: /data\nConversation ID: 93811820-b8a9-4130-b164-0080ad629d08\nArtifact Directory Path: /data/brain/93811820-b8a9-4130-b164-0080ad629d08\n</user_information>"
+	const read = `{"name":"read","parametersJsonSchema":{"type":"object","additionalProperties":false,"properties":{"file":{"type":"string","minLength":1}},"required":["file"]}}`
+	const list = `{"name":"list","description":"list files","parameters":{"type":"OBJECT"}}`
+	const functions = `"functionDeclarations":[` + read + `,` + list + `]`
+	const group = `[{` + functions + `}]`
+	const split = `[{"functionDeclarations":[` + read + `]},{"functionDeclarations":[` + list + `]}]`
+	e := NewAntigravityExecutor(&config.Config{Antigravity: config.AntigravityConfig{PreserveGeminiRequests: true}})
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini}
+	for _, tc := range []struct{ name, system, tools, want string }{
+		{"stock ACP", info, group, split},
+		{"already split", info, split, split},
+		{"ordinary Gemini client", "Hello", group, group},
+		{"group with metadata", info, `[{"other":true,` + functions + `}]`, `[{"other":true,` + functions + `}]`},
+		{"mixed tools", info, `[{"googleSearch":{}},{` + functions + `}]`, `[{"googleSearch":{}},{` + functions + `}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := ojson.NewDocString(`{"systemInstruction":{"parts":[{}]}}`)
+			_ = input.Set("systemInstruction.parts.0.text", tc.system)
+			_ = input.SetRaw("tools", tc.tools)
+			req := cliproxyexecutor.Request{Model: "gemini-test", Payload: input.Bytes()}
+			ctx := context.Background()
+			doc, _, errTranslate := e.translatePayload(ctx, req.Model, req, opts, true)
+			if errTranslate != nil {
+				t.Fatal(errTranslate)
+			}
+			if got := doc.Get("request.tools").Raw; got != tc.want {
+				t.Fatalf("tools = %s, want %s", got, tc.want)
+			}
+			ctx = helps.WithPayloadFinalizer(ctx, func(body []byte) []byte {
+				final := ojson.NewDoc(body)
+				_ = final.Delete("request.tools.0")
+				return final.Bytes()
+			})
+			auth := &cliproxyauth.Auth{ID: "fixture", Metadata: map[string]any{"project_id": "fixture"}}
+			_, body, errBuild := e.buildRequestDoc(ctx, auth, "fixture", req.Model, doc, true, opts, "http://127.0.0.1")
+			if errBuild != nil {
+				t.Fatal(errBuild)
+			}
+			if got := ojson.GetBytes(body, "request.tools.#").Int(); got != ojson.Parse(tc.want).Get("#").Int()-1 {
+				t.Fatal("configured tool filter must run after grouping")
+			}
+		})
 	}
 }
