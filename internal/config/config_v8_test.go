@@ -24,7 +24,7 @@ func TestV8ExampleLoadsAndRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load active v8 example: %v", err)
 	}
-	if active.Port != 8317 || len(active.APIKeys) != 3 || active.RequestRetry != 3 || !active.QuotaExceeded.AntigravityCredits {
+	if active.Port != 8317 || len(active.APIKeys) != 3 || active.RequestRetry != 3 {
 		t.Fatal("v8 template lost its default configuration")
 	}
 	if err = ValidateV8Config(example); err != nil {
@@ -70,7 +70,7 @@ func TestV8ExampleLoadsAndRoundTrips(t *testing.T) {
 	if cfg.Port != 8317 || len(cfg.APIKeys) != 3 || len(cfg.GeminiKey) != 3 || len(cfg.CodexKey) != 1 || len(cfg.ClaudeKey) != 2 || len(cfg.VertexCompatAPIKey) != 1 || len(cfg.XAIKey) != 1 || len(cfg.MetaKey) != 1 || len(cfg.InteractionsKey) != 1 || len(cfg.OpenAICompatibility) != 1 {
 		t.Fatal("v8 example fields did not reach runtime config")
 	}
-	if !cfg.QuotaExceeded.AntigravityCredits || cfg.QuotaExceeded.SwitchProject || cfg.QuotaExceeded.SwitchPreviewModel {
+	if cfg.QuotaExceeded.SwitchProject || cfg.QuotaExceeded.SwitchPreviewModel {
 		t.Fatal("legacy-only quota examples must remain commented")
 	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -238,7 +238,7 @@ port: 8317
 api-keys: [client]
 request-retry: 0
 ws-auth: false
-quota-exceeded: {switch-project: true, switch-preview-model: true, antigravity-credits: true}
+quota-exceeded: {switch-project: true, switch-preview-model: true}
 codex-api-key:
   - api-key: a
     base-url: https://example.invalid
@@ -732,7 +732,7 @@ func TestV8RejectsInvalidGroups(t *testing.T) {
 func TestV8ValidationRejectsLegacyWriteLayout(t *testing.T) {
 	for _, raw := range []string{
 		"debug: true", "server: {port: 8317}\nport: 8318", "api-keys: [client]",
-		"codex-api-key: []", "codex: {}", "quota-exceeded: {antigravity-credits: true}",
+		"codex-api-key: []", "codex: {}",
 		"home: {enabled: true}", "enable-gemini-cli-endpoint: true", "unknown-root: true",
 		"<<: {debug: true}",
 	} {

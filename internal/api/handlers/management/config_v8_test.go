@@ -994,7 +994,6 @@ func TestConfigV8_SensitiveWordsReplace(t *testing.T) {
 	router.DELETE("/v8/management/config/*path", h.ConfigV8)
 
 	for _, endpoint := range []string{
-		"/v8/management/config/oauth/providers/antigravity/sensitive-words-replace",
 		"/v8/management/config/oauth/providers/devin/sensitive-words-replace",
 	} {
 		w := httptest.NewRecorder()
@@ -1043,7 +1042,6 @@ func TestConfigV8_SensitivePatternsReplace(t *testing.T) {
 	router.DELETE("/v8/management/config/*path", h.ConfigV8)
 
 	for _, endpoint := range []string{
-		"/v8/management/config/oauth/providers/antigravity/sensitive-patterns-replace",
 		"/v8/management/config/oauth/providers/devin/sensitive-patterns-replace",
 	} {
 		w := httptest.NewRecorder()

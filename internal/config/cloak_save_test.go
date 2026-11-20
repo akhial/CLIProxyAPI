@@ -315,10 +315,7 @@ func TestSaveConfigPreserveComments_SensitiveWordsReplaceEmptyValueAndPruning(t 
 			}
 
 			// Step 1: Save empty-string deletion entries in all three scopes.
-			cfg.Antigravity.SensitiveWordsReplace = map[string]string{
-				"You are Codex, an agent based on GPT-5.": "",
-				"TempAntigrav": "Keep",
-			}
+
 			cfg.Devin.SensitiveWordsReplace = map[string]string{
 				"DropDevinPhrase": "",
 			}
@@ -335,9 +332,7 @@ func TestSaveConfigPreserveComments_SensitiveWordsReplaceEmptyValueAndPruning(t 
 			if errReload != nil {
 				t.Fatalf("reload step 1 error = %v", errReload)
 			}
-			if val, ok := reloaded.Antigravity.SensitiveWordsReplace["You are Codex, an agent based on GPT-5."]; !ok || val != "" {
-				t.Fatalf("Antigravity empty replacement lost: %#v", reloaded.Antigravity.SensitiveWordsReplace)
-			}
+
 			if val, ok := reloaded.Devin.SensitiveWordsReplace["DropDevinPhrase"]; !ok || val != "" {
 				t.Fatalf("Devin empty replacement lost: %#v", reloaded.Devin.SensitiveWordsReplace)
 			}
@@ -349,7 +344,6 @@ func TestSaveConfigPreserveComments_SensitiveWordsReplaceEmptyValueAndPruning(t 
 			}
 
 			// Step 2: Prune individual keys and clear Devin replacements completely.
-			delete(reloaded.Antigravity.SensitiveWordsReplace, "TempAntigrav")
 			reloaded.Devin.SensitiveWordsReplace = nil
 			delete(reloaded.ClaudeKey[0].Cloak.SensitiveWordsReplace, "OldClaudeTarget")
 			if errSave2 := SaveConfigPreserveComments(configPath, reloaded); errSave2 != nil {
@@ -359,9 +353,7 @@ func TestSaveConfigPreserveComments_SensitiveWordsReplaceEmptyValueAndPruning(t 
 			if errReload2 != nil {
 				t.Fatalf("reload step 2 error = %v", errReload2)
 			}
-			if _, exists := reloaded2.Antigravity.SensitiveWordsReplace["TempAntigrav"]; exists {
-				t.Fatalf("deleted Antigravity key persisted: %#v", reloaded2.Antigravity.SensitiveWordsReplace)
-			}
+
 			if len(reloaded2.Devin.SensitiveWordsReplace) != 0 {
 				t.Fatalf("cleared Devin replacements persisted: %#v", reloaded2.Devin.SensitiveWordsReplace)
 			}
@@ -390,9 +382,6 @@ func TestSaveConfigPreserveComments_SensitivePatternsReplaceEmptyValueAndPruning
 				t.Fatalf("initial LoadConfigOptional() error = %v", errLoad)
 			}
 
-			cfg.Antigravity.SensitivePatternsReplace = []SensitivePatternRule{
-				{Pattern: `(?m)^RFC 2119[^\n]*\n?`, Replacement: ""},
-			}
 			cfg.Devin.SensitivePatternsReplace = []SensitivePatternRule{
 				{Pattern: `(?m)^You are omp[^\n]*\n?`, Replacement: ""},
 			}
@@ -408,9 +397,7 @@ func TestSaveConfigPreserveComments_SensitivePatternsReplaceEmptyValueAndPruning
 			if errReload != nil {
 				t.Fatalf("reload step 1 error = %v", errReload)
 			}
-			if len(reloaded.Antigravity.SensitivePatternsReplace) != 1 || reloaded.Antigravity.SensitivePatternsReplace[0].Replacement != "" {
-				t.Fatalf("Antigravity patterns = %#v", reloaded.Antigravity.SensitivePatternsReplace)
-			}
+
 			if len(reloaded.Devin.SensitivePatternsReplace) != 1 || reloaded.Devin.SensitivePatternsReplace[0].Replacement != "" {
 				t.Fatalf("Devin patterns = %#v", reloaded.Devin.SensitivePatternsReplace)
 			}
@@ -418,7 +405,6 @@ func TestSaveConfigPreserveComments_SensitivePatternsReplaceEmptyValueAndPruning
 				t.Fatalf("Claude patterns = %#v", reloaded.ClaudeKey[0].Cloak)
 			}
 
-			reloaded.Antigravity.SensitivePatternsReplace = nil
 			reloaded.Devin.SensitivePatternsReplace = nil
 			reloaded.ClaudeKey[0].Cloak.SensitivePatternsReplace = nil
 			if errSave2 := SaveConfigPreserveComments(configPath, reloaded); errSave2 != nil {
@@ -428,9 +414,7 @@ func TestSaveConfigPreserveComments_SensitivePatternsReplaceEmptyValueAndPruning
 			if errReload2 != nil {
 				t.Fatalf("reload step 2 error = %v", errReload2)
 			}
-			if len(reloaded2.Antigravity.SensitivePatternsReplace) != 0 {
-				t.Fatalf("cleared Antigravity patterns persisted: %#v", reloaded2.Antigravity.SensitivePatternsReplace)
-			}
+
 			if len(reloaded2.Devin.SensitivePatternsReplace) != 0 {
 				t.Fatalf("cleared Devin patterns persisted: %#v", reloaded2.Devin.SensitivePatternsReplace)
 			}
@@ -445,7 +429,7 @@ func TestSaveConfigPreserveComments_SensitivePatternsReplacePreservesComments(t 
 	for _, v8Layout := range []bool{false, true} {
 		name := "legacy"
 		initialYAML := `port: 8317
-antigravity:
+devin:
   # keep section comment
   sensitive-patterns-replace:
     # keep rule comment
@@ -459,7 +443,7 @@ server:
   port: 8317
 oauth:
   providers:
-    antigravity:
+    devin:
       # keep section comment
       sensitive-patterns-replace:
         # keep rule comment

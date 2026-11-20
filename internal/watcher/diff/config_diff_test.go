@@ -428,9 +428,8 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 		MaxRetryCredentials:           1,
 		MaxRetryInterval:              1,
 		WebsocketAuth:                 false,
-		QuotaExceeded:                 config.QuotaExceeded{SwitchProject: false, SwitchPreviewModel: false, AntigravityCredits: false},
+		QuotaExceeded:                 config.QuotaExceeded{SwitchProject: false, SwitchPreviewModel: false},
 		Antigravity: config.AntigravityConfig{
-			SensitiveWords: []string{"old-word"},
 			ConnectionPool: config.AntigravityConnectionPoolConfig{
 				Enabled:         &oldPoolEnabled,
 				IdleConnTimeout: "30s",
@@ -460,9 +459,8 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 		MaxRetryCredentials:           3,
 		MaxRetryInterval:              3,
 		WebsocketAuth:                 true,
-		QuotaExceeded:                 config.QuotaExceeded{SwitchProject: true, SwitchPreviewModel: true, AntigravityCredits: true},
+		QuotaExceeded:                 config.QuotaExceeded{SwitchProject: true, SwitchPreviewModel: true},
 		Antigravity: config.AntigravityConfig{
-			SensitiveWords: []string{"new-word-1", "new-word-2"},
 			ConnectionPool: config.AntigravityConnectionPoolConfig{
 				Enabled:         &newPoolEnabled,
 				IdleConnTimeout: "10s",
@@ -516,8 +514,6 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "nonstream-keepalive-interval: 0 -> 5")
 	expectContains(t, details, "quota-exceeded.switch-project: false -> true")
 	expectContains(t, details, "quota-exceeded.switch-preview-model: false -> true")
-	expectContains(t, details, "quota-exceeded.antigravity-credits: false -> true")
-	expectContains(t, details, "antigravity.sensitive-words: 1 -> 2")
 	expectContains(t, details, "antigravity.connection-pool.enabled: false -> true")
 	expectContains(t, details, `antigravity.connection-pool.idle-conn-timeout: "30s" -> "10s"`)
 	expectContains(t, details, "xai.inject-x-search: false -> true")
@@ -546,7 +542,7 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 		MaxRetryCredentials:           1,
 		MaxRetryInterval:              1,
 		WebsocketAuth:                 false,
-		QuotaExceeded:                 config.QuotaExceeded{SwitchProject: false, SwitchPreviewModel: false, AntigravityCredits: false},
+		QuotaExceeded:                 config.QuotaExceeded{SwitchProject: false, SwitchPreviewModel: false},
 		GeminiKey: []config.GeminiKey{
 			{APIKey: "g-old", BaseURL: "http://g-old", ProxyURL: "http://gp-old", Headers: map[string]string{"A": "1"}},
 		},
@@ -595,7 +591,7 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 		MaxRetryCredentials:           3,
 		MaxRetryInterval:              3,
 		WebsocketAuth:                 true,
-		QuotaExceeded:                 config.QuotaExceeded{SwitchProject: true, SwitchPreviewModel: true, AntigravityCredits: true},
+		QuotaExceeded:                 config.QuotaExceeded{SwitchProject: true, SwitchPreviewModel: true},
 		GeminiKey: []config.GeminiKey{
 			{APIKey: "g-new", BaseURL: "http://g-new", ProxyURL: "http://gp-new", Headers: map[string]string{"A": "2"}, ExcludedModels: []string{"x", "y"}},
 		},
@@ -655,7 +651,6 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 	expectContains(t, changes, "ws-auth: false -> true")
 	expectContains(t, changes, "quota-exceeded.switch-project: false -> true")
 	expectContains(t, changes, "quota-exceeded.switch-preview-model: false -> true")
-	expectContains(t, changes, "quota-exceeded.antigravity-credits: false -> true")
 	expectContains(t, changes, "api-keys: values updated (count unchanged, redacted)")
 	expectContains(t, changes, "gemini[0].base-url: http://g-old -> http://g-new")
 	expectContains(t, changes, "gemini[0].proxy-url: http://gp-old -> http://gp-new")
@@ -843,18 +838,12 @@ func TestBuildConfigChangeDetails_KVStore(t *testing.T) {
 
 func TestBuildConfigChangeDetails_SensitiveWordsReplace(t *testing.T) {
 	oldCfg := &config.Config{
-		Antigravity: config.AntigravityConfig{
-			SensitiveWordsReplace: map[string]string{"Codex": "Assistant"},
-		},
 		ClaudeKey: []config.ClaudeKey{{
 			APIKey: "k1",
 			Cloak:  &config.CloakConfig{SensitiveWordsReplace: map[string]string{"a": "b"}},
 		}},
 	}
 	newCfg := &config.Config{
-		Antigravity: config.AntigravityConfig{
-			SensitiveWordsReplace: map[string]string{"Codex": "Assistant", "GPT-5": "Model"},
-		},
 		Devin: config.DevinConfig{
 			SensitiveWordsReplace: map[string]string{"Claude Code": "Devin"},
 		},
@@ -864,32 +853,27 @@ func TestBuildConfigChangeDetails_SensitiveWordsReplace(t *testing.T) {
 		}},
 	}
 	changes := BuildConfigChangeDetails(oldCfg, newCfg)
-	expectContains(t, changes, "antigravity.sensitive-words-replace: 1 -> 2")
 	expectContains(t, changes, "devin.sensitive-words-replace: 0 -> 1")
 	expectContains(t, changes, "claude[0].cloak.sensitive-words-replace: 1 -> 1")
 
 	emptyA := &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "k1", Cloak: &config.CloakConfig{}}}}
 	emptyB := &config.Config{
-		Antigravity: config.AntigravityConfig{SensitiveWordsReplace: map[string]string{}},
-		Devin:       config.DevinConfig{SensitiveWordsReplace: map[string]string{}},
-		ClaudeKey:   []config.ClaudeKey{{APIKey: "k1", Cloak: &config.CloakConfig{SensitiveWordsReplace: map[string]string{}}}},
+		Devin:     config.DevinConfig{SensitiveWordsReplace: map[string]string{}},
+		ClaudeKey: []config.ClaudeKey{{APIKey: "k1", Cloak: &config.CloakConfig{SensitiveWordsReplace: map[string]string{}}}},
 	}
 	if noDiff := BuildConfigChangeDetails(emptyA, emptyB); len(noDiff) != 0 {
 		t.Fatalf("expected no diff between nil and empty SensitiveWordsReplace maps, got %v", noDiff)
 	}
 
 	emptyValOld := &config.Config{
-		Antigravity: config.AntigravityConfig{SensitiveWordsReplace: map[string]string{"Codex": ""}},
-		Devin:       config.DevinConfig{SensitiveWordsReplace: map[string]string{"Codex": ""}},
-		ClaudeKey:   []config.ClaudeKey{{APIKey: "k1", Cloak: &config.CloakConfig{SensitiveWordsReplace: map[string]string{"Codex": ""}}}},
+		Devin:     config.DevinConfig{SensitiveWordsReplace: map[string]string{"Codex": ""}},
+		ClaudeKey: []config.ClaudeKey{{APIKey: "k1", Cloak: &config.CloakConfig{SensitiveWordsReplace: map[string]string{"Codex": ""}}}},
 	}
 	emptyValNew := &config.Config{
-		Antigravity: config.AntigravityConfig{SensitiveWordsReplace: map[string]string{"GPT-5": ""}},
-		Devin:       config.DevinConfig{SensitiveWordsReplace: map[string]string{"GPT-5": ""}},
-		ClaudeKey:   []config.ClaudeKey{{APIKey: "k1", Cloak: &config.CloakConfig{SensitiveWordsReplace: map[string]string{"GPT-5": ""}}}},
+		Devin:     config.DevinConfig{SensitiveWordsReplace: map[string]string{"GPT-5": ""}},
+		ClaudeKey: []config.ClaudeKey{{APIKey: "k1", Cloak: &config.CloakConfig{SensitiveWordsReplace: map[string]string{"GPT-5": ""}}}},
 	}
 	emptyValChanges := BuildConfigChangeDetails(emptyValOld, emptyValNew)
-	expectContains(t, emptyValChanges, "antigravity.sensitive-words-replace: 1 -> 1")
 	expectContains(t, emptyValChanges, "devin.sensitive-words-replace: 1 -> 1")
 	expectContains(t, emptyValChanges, "claude[0].cloak.sensitive-words-replace: 1 -> 1")
 
@@ -910,18 +894,12 @@ func TestBuildConfigChangeDetails_SensitiveWordsReplace(t *testing.T) {
 
 func TestBuildConfigChangeDetails_SensitivePatternsReplace(t *testing.T) {
 	oldCfg := &config.Config{
-		Antigravity: config.AntigravityConfig{
-			SensitivePatternsReplace: []config.SensitivePatternRule{{Pattern: "a", Replacement: ""}},
-		},
 		ClaudeKey: []config.ClaudeKey{{
 			APIKey: "k1",
 			Cloak:  &config.CloakConfig{SensitivePatternsReplace: []config.SensitivePatternRule{{Pattern: "c", Replacement: ""}}},
 		}},
 	}
 	newCfg := &config.Config{
-		Antigravity: config.AntigravityConfig{
-			SensitivePatternsReplace: []config.SensitivePatternRule{{Pattern: "a", Replacement: ""}, {Pattern: "b", Replacement: "x"}},
-		},
 		Devin: config.DevinConfig{
 			SensitivePatternsReplace: []config.SensitivePatternRule{{Pattern: "d", Replacement: ""}},
 		},
@@ -931,15 +909,13 @@ func TestBuildConfigChangeDetails_SensitivePatternsReplace(t *testing.T) {
 		}},
 	}
 	changes := BuildConfigChangeDetails(oldCfg, newCfg)
-	expectContains(t, changes, "antigravity.sensitive-patterns-replace: 1 -> 2")
 	expectContains(t, changes, "devin.sensitive-patterns-replace: 0 -> 1")
 	expectContains(t, changes, "claude[0].cloak.sensitive-patterns-replace: 1 -> 1")
 
 	emptyA := &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "k1", Cloak: &config.CloakConfig{}}}}
 	emptyB := &config.Config{
-		Antigravity: config.AntigravityConfig{SensitivePatternsReplace: []config.SensitivePatternRule{}},
-		Devin:       config.DevinConfig{SensitivePatternsReplace: []config.SensitivePatternRule{}},
-		ClaudeKey:   []config.ClaudeKey{{APIKey: "k1", Cloak: &config.CloakConfig{SensitivePatternsReplace: []config.SensitivePatternRule{}}}},
+		Devin:     config.DevinConfig{SensitivePatternsReplace: []config.SensitivePatternRule{}},
+		ClaudeKey: []config.ClaudeKey{{APIKey: "k1", Cloak: &config.CloakConfig{SensitivePatternsReplace: []config.SensitivePatternRule{}}}},
 	}
 	if noDiff := BuildConfigChangeDetails(emptyA, emptyB); len(noDiff) != 0 {
 		t.Fatalf("expected no diff between nil and empty SensitivePatternsReplace slices, got %v", noDiff)

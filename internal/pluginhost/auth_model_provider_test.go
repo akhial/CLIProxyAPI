@@ -20,7 +20,7 @@ func TestHasAuthModelProviderDoesNotRunDiscovery(t *testing.T) {
 					},
 					modelsForAuth: func(context.Context, pluginapi.AuthModelRequest) (pluginapi.ModelResponse, error) {
 						calls++
-						return pluginapi.ModelResponse{Provider: "antigravity", Models: []pluginapi.ModelInfo{{ID: "plugin-model"}}, AuthUpdate: pluginapi.AuthData{Metadata: map[string]any{"access_token": "rotated"}}}, nil
+						return pluginapi.ModelResponse{Provider: "antigravity", Models: []pluginapi.ModelInfo{{ID: "gemini-test"}, {ID: "non-gemini-plugin"}}, AuthUpdate: pluginapi.AuthData{Metadata: map[string]any{"access_token": "rotated"}}}, nil
 					},
 				},
 			}
@@ -62,7 +62,7 @@ func TestHasAuthModelProviderDoesNotRunDiscovery(t *testing.T) {
 			if result.Handled != want {
 				t.Fatal("ownership lookup disagrees with per-auth dispatch")
 			}
-			if want && (calls != 1 || result.Auth == nil || result.Auth.Metadata["access_token"] != "rotated" || len(result.Models) != 1) {
+			if want && (calls != 1 || result.Auth == nil || result.Auth.Metadata["access_token"] != "rotated" || len(result.Models) != 1 || result.Models[0].ID != "gemini-test") {
 				t.Fatal("normal discovery lost model or credential updates")
 			}
 		})

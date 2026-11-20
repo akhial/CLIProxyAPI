@@ -15,21 +15,6 @@ func TestCloneForRuntimeNil(t *testing.T) {
 	}
 }
 
-func TestParseConfigBytes_AntigravitySensitiveWords(t *testing.T) {
-	cfg, errParse := ParseConfigBytes([]byte(`antigravity:
-  sensitive-words:
-    - "API"
-    - "proxy"
-`))
-	if errParse != nil {
-		t.Fatalf("ParseConfigBytes() error = %v", errParse)
-	}
-	want := []string{"API", "proxy"}
-	if !reflect.DeepEqual(cfg.Antigravity.SensitiveWords, want) {
-		t.Fatalf("Antigravity.SensitiveWords = %#v, want %#v", cfg.Antigravity.SensitiveWords, want)
-	}
-}
-
 func TestParseConfigBytes_AntigravityConnectionPool(t *testing.T) {
 	cfg, errParse := ParseConfigBytes([]byte(`antigravity:
   connection-pool:
@@ -164,13 +149,6 @@ func sampleCloneRuntimeConfig() *Config {
 		},
 		AntigravitySignatureCacheEnabled: &cacheStrict,
 		AntigravitySignatureBypassStrict: &bypassStrict,
-		Antigravity: AntigravityConfig{
-			SensitiveWords:        []string{"Codex"},
-			SensitiveWordsReplace: map[string]string{"You are Codex": "You are an assistant"},
-			SensitivePatternsReplace: []SensitivePatternRule{
-				{Pattern: `(?m)^RFC 2119[^\n]*\n?`, Replacement: ""},
-			},
-		},
 		Devin: DevinConfig{
 			SensitiveWords:        []string{"DevinWord"},
 			SensitiveWordsReplace: map[string]string{"Claude Code": "Devin"},
@@ -389,11 +367,6 @@ func TestV8Validate_SensitiveWordsReplace(t *testing.T) {
 	v8YAML := []byte(`config-version: 8
 oauth:
   providers:
-    antigravity:
-      sensitive-words:
-        - "Codex"
-      sensitive-words-replace:
-        "You are Codex, an agent based on GPT-5.": "You are a helpful coding assistant."
     devin:
       sensitive-words:
         - "API"
@@ -417,9 +390,6 @@ api-keys:
 	if errParse != nil {
 		t.Fatalf("ParseConfigBytes() error = %v", errParse)
 	}
-	if got := cfg.Antigravity.SensitiveWordsReplace["You are Codex, an agent based on GPT-5."]; got != "You are a helpful coding assistant." {
-		t.Fatalf("Antigravity.SensitiveWordsReplace = %#v", cfg.Antigravity.SensitiveWordsReplace)
-	}
 	if got := cfg.Devin.SensitiveWordsReplace["Claude Code"]; got != "Devin Assistant" {
 		t.Fatalf("Devin.SensitiveWordsReplace = %#v", cfg.Devin.SensitiveWordsReplace)
 	}
@@ -432,12 +402,6 @@ func TestV8Validate_SensitivePatternsReplaceAndInvalidDrop(t *testing.T) {
 	v8YAML := []byte(`config-version: 8
 oauth:
   providers:
-    antigravity:
-      sensitive-patterns-replace:
-        - pattern: '(?m)^RFC 2119[^\n]*\n?'
-          replacement: ""
-        - pattern: '[invalid'
-          replacement: "ignored"
     devin:
       sensitive-patterns-replace:
         - pattern: '(?m)^You are omp[^\n]*\n?'
@@ -458,9 +422,6 @@ api-keys:
 	cfg, errParse := ParseConfigBytes(v8YAML)
 	if errParse != nil {
 		t.Fatalf("ParseConfigBytes() error = %v", errParse)
-	}
-	if len(cfg.Antigravity.SensitivePatternsReplace) != 1 || cfg.Antigravity.SensitivePatternsReplace[0].Pattern != `(?m)^RFC 2119[^\n]*\n?` || cfg.Antigravity.SensitivePatternsReplace[0].Replacement != "" {
-		t.Fatalf("Antigravity.SensitivePatternsReplace = %#v", cfg.Antigravity.SensitivePatternsReplace)
 	}
 	if len(cfg.Devin.SensitivePatternsReplace) != 1 || cfg.Devin.SensitivePatternsReplace[0].Pattern != `(?m)^You are omp[^\n]*\n?` {
 		t.Fatalf("Devin.SensitivePatternsReplace = %#v", cfg.Devin.SensitivePatternsReplace)

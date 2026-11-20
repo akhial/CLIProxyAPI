@@ -70,23 +70,23 @@ func TestAntigravityStream_ClientDisconnectAfterTerminalChunkDoesNotReportFailur
 		Attributes: map[string]string{"base_url": server.URL},
 	}, cliproxyexecutor.Request{
 		Model:   "gemini-3.8-flash-high",
-		Payload: []byte(`{"model":"gemini-3.8-flash-high","input":"hello","stream":true}`),
+		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`),
 	}, cliproxyexecutor.Options{
-		SourceFormat:   sdktranslator.FormatOpenAIResponse,
-		ResponseFormat: sdktranslator.FormatOpenAIResponse,
+		SourceFormat:   sdktranslator.FormatGemini,
+		ResponseFormat: sdktranslator.FormatGemini,
 		Stream:         true,
 	})
 	if errExecute != nil {
 		t.Fatalf("ExecuteStream() error = %v", errExecute)
 	}
 
-	// Consume chunks until terminal event response.completed is observed
+	// Consume chunks until terminal event Gemini finishReason is observed
 	terminalReceived := false
 	for chunk := range result.Chunks {
 		if chunk.Err != nil {
 			break
 		}
-		if ojson.GetBytes(chunk.Payload, "type").String() == "response.completed" {
+		if ojson.GetBytes(chunk.Payload, "candidates.0.finishReason").String() == "STOP" {
 			terminalReceived = true
 			// Client received completed response and terminates connection
 			finishDelivery(context.Canceled)
@@ -96,7 +96,7 @@ func TestAntigravityStream_ClientDisconnectAfterTerminalChunkDoesNotReportFailur
 	}
 
 	if !terminalReceived {
-		t.Fatal("expected to receive response.completed chunk before cancellation")
+		t.Fatal("expected to receive Gemini finishReason chunk before cancellation")
 	}
 
 	select {
@@ -161,10 +161,10 @@ func TestAntigravityStream_ClientDisconnectPlainContextAfterTerminalChunkDoesNot
 		Attributes: map[string]string{"base_url": server.URL},
 	}, cliproxyexecutor.Request{
 		Model:   "gemini-3.8-flash-high",
-		Payload: []byte(`{"model":"gemini-3.8-flash-high","input":"hello","stream":true}`),
+		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`),
 	}, cliproxyexecutor.Options{
-		SourceFormat:   sdktranslator.FormatOpenAIResponse,
-		ResponseFormat: sdktranslator.FormatOpenAIResponse,
+		SourceFormat:   sdktranslator.FormatGemini,
+		ResponseFormat: sdktranslator.FormatGemini,
 		Stream:         true,
 	})
 	if errExecute != nil {
@@ -176,7 +176,7 @@ func TestAntigravityStream_ClientDisconnectPlainContextAfterTerminalChunkDoesNot
 		if chunk.Err != nil {
 			break
 		}
-		if ojson.GetBytes(chunk.Payload, "type").String() == "response.completed" {
+		if ojson.GetBytes(chunk.Payload, "candidates.0.finishReason").String() == "STOP" {
 			terminalReceived = true
 			cancel()
 			break
@@ -184,7 +184,7 @@ func TestAntigravityStream_ClientDisconnectPlainContextAfterTerminalChunkDoesNot
 	}
 
 	if !terminalReceived {
-		t.Fatal("expected to receive response.completed chunk before cancellation")
+		t.Fatal("expected to receive Gemini finishReason chunk before cancellation")
 	}
 
 	select {
@@ -194,94 +194,6 @@ func TestAntigravityStream_ClientDisconnectPlainContextAfterTerminalChunkDoesNot
 		}
 		if record.Detail.InputTokens != 20 || record.Detail.OutputTokens != 8 || record.Detail.TotalTokens != 28 {
 			t.Fatalf("reported usage = %+v, want input 20 output 8 total 28", record.Detail)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for usage record")
-	}
-}
-
-// TestAntigravityStream_OpenAIChatCompletions_ClientDisconnectAfterStopChunkDoesNotReportFailure
-// covers standard chat completions FormatOpenAI streaming where client disconnects after finish_reason.
-func TestAntigravityStream_OpenAIChatCompletions_ClientDisconnectAfterStopChunkDoesNotReportFailure(t *testing.T) {
-	const authID = "antigravity-chat-disconnect-test"
-	capture := &antigravityUsageCapture{authID: authID, records: make(chan usage.Record, 4)}
-	usage.RegisterNamedPlugin(t.Name(), capture)
-	t.Cleanup(func() {
-		usage.RegisterNamedPlugin(t.Name(), antigravityUsageNoop{})
-	})
-
-	const upstreamSSE = `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello, world!"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":30,"candidatesTokenCount":12,"totalTokenCount":42},"modelVersion":"gemini-3.8-flash","responseId":"resp-789"}}
-
-`
-
-	upstreamClosed := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, upstreamSSE)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		select {
-		case <-r.Context().Done():
-		case <-upstreamClosed:
-		}
-	}))
-	defer func() {
-		close(upstreamClosed)
-		server.Close()
-	}()
-
-	executor := NewAntigravityExecutor(&config.Config{
-		Antigravity:  config.AntigravityConfig{},
-		RequestRetry: 1,
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	result, errExecute := executor.ExecuteStream(ctx, &cliproxyauth.Auth{
-		ID: authID,
-		Metadata: map[string]any{
-			"access_token": "token-123",
-			"expired":      time.Now().Add(24 * time.Hour).Format(time.RFC3339),
-			"project_id":   "project-1",
-		},
-		Attributes: map[string]string{"base_url": server.URL},
-	}, cliproxyexecutor.Request{
-		Model:   "gemini-3.8-flash-high",
-		Payload: []byte(`{"model":"gemini-3.8-flash-high","messages":[{"role":"user","content":"hello"}],"stream":true}`),
-	}, cliproxyexecutor.Options{
-		SourceFormat:   sdktranslator.FormatOpenAI,
-		ResponseFormat: sdktranslator.FormatOpenAI,
-		Stream:         true,
-	})
-	if errExecute != nil {
-		t.Fatalf("ExecuteStream() error = %v", errExecute)
-	}
-
-	terminalReceived := false
-	for chunk := range result.Chunks {
-		if chunk.Err != nil {
-			break
-		}
-		if ojson.GetBytes(chunk.Payload, "choices.0.finish_reason").String() != "" {
-			terminalReceived = true
-			cancel()
-			break
-		}
-	}
-
-	if !terminalReceived {
-		t.Fatal("expected to receive finish_reason chunk before cancellation")
-	}
-
-	select {
-	case record := <-capture.records:
-		if record.Failed {
-			t.Fatalf("usage record marked failed: status=%d, body=%q", record.Fail.StatusCode, record.Fail.Body)
-		}
-		if record.Detail.InputTokens != 30 || record.Detail.OutputTokens != 12 || record.Detail.TotalTokens != 42 {
-			t.Fatalf("reported usage = %+v, want input 30 output 12 total 42", record.Detail)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for usage record")

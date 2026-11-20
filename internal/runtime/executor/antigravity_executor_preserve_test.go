@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,8 +22,8 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
-func TestAntigravityPreserveGeminiRequests(t *testing.T) {
-	// Includes an unsigned tool call in history and constraints affected by legacy cleanup.
+func TestAntigravityNativeGeminiRequests(t *testing.T) {
+	// Includes an unsigned tool call and constraints on its argument schema.
 	const input = `{
 		"systemInstruction":{"parts":[{"text":"original instruction"}]},
 		"contents":[{"role":"user","parts":[{"text":"one"},{"text":"two"}]},
@@ -45,7 +46,7 @@ func TestAntigravityPreserveGeminiRequests(t *testing.T) {
 		for _, rules := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/rules=%t", tc.name, rules), func(t *testing.T) {
 				ctx := context.Background()
-				cfg := &config.Config{DisableCooling: true, Antigravity: config.AntigravityConfig{PreserveGeminiRequests: true, SensitiveWords: []string{"original"}}}
+				cfg := &config.Config{DisableCooling: true}
 				want := ojson.NewDocString(input)
 				if rules {
 					models := []config.PayloadModelRule{{Name: "gemini-*", Protocol: "antigravity"}}
@@ -148,7 +149,7 @@ func TestAntigravityPreservedACPHostSession(t *testing.T) {
 		child = "0ac5d42e-97ba-4fcb-a527-8e7ac6e3a5f7"
 	)
 	ctx := context.Background()
-	e := NewAntigravityExecutor(&config.Config{Antigravity: config.AntigravityConfig{PreserveGeminiRequests: true}})
+	e := NewAntigravityExecutor(&config.Config{})
 	model := "gemini-4-neon"
 	build := func(ctx context.Context, worker, account, conversation, rootID, step, text string, stream bool) []byte {
 		t.Helper()
@@ -239,7 +240,7 @@ func TestAntigravityPreservedACPHostSession(t *testing.T) {
 
 func TestAntigravityRejectsInvalidACPHostHeaders(t *testing.T) {
 	const validID = "3dbc79e2-5446-427f-aa8b-09466feadb26"
-	e := NewAntigravityExecutor(&config.Config{Antigravity: config.AntigravityConfig{PreserveGeminiRequests: true}})
+	e := NewAntigravityExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{ID: "account", Metadata: map[string]any{"project_id": "project"}}
 	for _, tc := range []struct {
 		name         string
@@ -286,7 +287,7 @@ func TestAntigravityStockACPConversation(t *testing.T) {
 	const info = "<user_information>\nCommand Working Directory: /fixture/workspace\n" +
 		"App Data Directory: /fixture/data\nConversation ID: " + conversation + "\n" +
 		"Artifact Directory Path: /fixture/data/brain/" + conversation + "\n</user_information>"
-	e := NewAntigravityExecutor(&config.Config{Antigravity: config.AntigravityConfig{PreserveGeminiRequests: true}})
+	e := NewAntigravityExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{ID: "account", Metadata: map[string]any{"project_id": "project"}}
 	ctx := context.Background()
 	build := func(system, explicit, native, worker string, initialLabels ...string) *ojson.Doc {
@@ -380,7 +381,7 @@ func TestAntigravityACPToolDeclarations(t *testing.T) {
 	const functions = `"functionDeclarations":[` + read + `,` + list + `]`
 	const group = `[{` + functions + `}]`
 	const split = `[{"functionDeclarations":[` + read + `]},{"functionDeclarations":[` + list + `]}]`
-	e := NewAntigravityExecutor(&config.Config{Antigravity: config.AntigravityConfig{PreserveGeminiRequests: true}})
+	e := NewAntigravityExecutor(&config.Config{})
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini}
 	for _, tc := range []struct{ name, system, tools, want string }{
 		{"stock ACP", info, group, split},
@@ -395,7 +396,7 @@ func TestAntigravityACPToolDeclarations(t *testing.T) {
 			_ = input.SetRaw("tools", tc.tools)
 			req := cliproxyexecutor.Request{Model: "gemini-test", Payload: input.Bytes()}
 			ctx := context.Background()
-			doc, _, errTranslate := e.translatePayload(ctx, req.Model, req, opts, true)
+			doc, _, errTranslate := antigravityPayload(req, opts)
 			if errTranslate != nil {
 				t.Fatal(errTranslate)
 			}
@@ -414,6 +415,44 @@ func TestAntigravityACPToolDeclarations(t *testing.T) {
 			}
 			if got := ojson.GetBytes(body, "request.tools.#").Int(); got != ojson.Parse(tc.want).Get("#").Int()-1 {
 				t.Fatal("configured tool filter must run after grouping")
+			}
+		})
+	}
+}
+
+func TestAntigravityRejectsUnsupportedRoutesBeforeAuthentication(t *testing.T) {
+	e := NewAntigravityExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{ID: t.Name(), Metadata: map[string]any{
+		"refresh_token": "fixture-refresh", "expired": "2000-01-01T00:00:00Z",
+	}}
+	ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		t.Errorf("unexpected outbound request for an unsupported route: %s", r.URL.Path)
+		return nil, fmt.Errorf("unexpected outbound request")
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/v1internal:generateContent", nil)
+	if _, err := e.HttpRequest(ctx, auth, req); err == nil {
+		t.Fatal("raw Antigravity HTTP request accepted")
+	}
+	for _, tc := range []struct {
+		name, model      string
+		source, response sdktranslator.Format
+	}{
+		{"non-Gemini model", "claude-test", sdktranslator.FormatGemini, sdktranslator.FormatGemini},
+		{"foreign request", "gemini-test", sdktranslator.FormatClaude, sdktranslator.FormatGemini},
+		{"foreign response", "gemini-test", sdktranslator.FormatGemini, sdktranslator.FormatOpenAIResponse},
+		{"missing source", "gemini-test", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := cliproxyexecutor.Request{Model: tc.model, Payload: []byte(`{"contents":[]}`)}
+			opts := cliproxyexecutor.Options{SourceFormat: tc.source, ResponseFormat: tc.response}
+			_, unary := e.Execute(ctx, auth, req, opts)
+			_, stream := e.ExecuteStream(ctx, auth, req, opts)
+			_, count := e.CountTokens(ctx, auth, req, opts)
+			for operation, err := range map[string]error{"generate": unary, "stream": stream, "count": count} {
+				var rejected statusErr
+				if !errors.As(err, &rejected) || rejected.StatusCode() != http.StatusBadRequest {
+					t.Errorf("%s returned %v, want HTTP 400", operation, err)
+				}
 			}
 		})
 	}

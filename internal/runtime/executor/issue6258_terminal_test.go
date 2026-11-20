@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
@@ -23,7 +22,7 @@ import (
 const issue6258ExecutorContent = `{"responseId":"executor-6258","candidates":[{"content":{"parts":[{"text":"answer"}]}}]}`
 const issue6258ExecutorUsage = `{"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":10,"thoughtsTokenCount":50,"totalTokenCount":160}}`
 
-var issue6258Providers = []string{"gemini", "vertex_api_key", "vertex_service_account", "antigravity"}
+var issue6258Providers = []string{"gemini", "vertex_api_key", "vertex_service_account"}
 
 type issue6258StreamExecutor interface {
 	ExecuteStream(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error)
@@ -69,10 +68,6 @@ func issue6258Executor(t *testing.T, provider, baseURL string) (context.Context,
 		t.Cleanup(transport.CloseIdleConnections)
 		ctx = context.WithValue(ctx, "cliproxy.roundtripper", issue6258RedirectTransport{target: target, base: transport})
 		return ctx, NewGeminiVertexExecutor(cfg), auth
-	case "antigravity":
-		auth.Attributes = map[string]string{"base_url": baseURL}
-		auth.Metadata = map[string]any{"access_token": "test-token", "expired": time.Now().Add(24 * time.Hour).Format(time.RFC3339), "project_id": "proxy-test"}
-		return ctx, NewAntigravityExecutor(cfg), auth
 	default:
 		t.Fatalf("unknown provider %q", provider)
 		return nil, nil, nil
@@ -136,9 +131,6 @@ func issue6258ExecutorTerminal(t *testing.T, chunks <-chan cliproxyexecutor.Stre
 }
 
 func issue6258SSE(provider, body string, trace bool) string {
-	if provider == "antigravity" {
-		body = `{"response":` + body + `}`
-	}
 	if trace {
 		body = strings.TrimSuffix(body, "}") + `,"traceId":"trace-6258"}`
 	}

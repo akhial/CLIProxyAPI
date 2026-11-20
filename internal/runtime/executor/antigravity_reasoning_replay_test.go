@@ -168,7 +168,6 @@ func TestPrepareAntigravityGeminiReasoningReplayPayloadSanitizesInsertedUnsigned
 	}
 
 	payload := []byte(`{"sessionId":"sess-unsigned-replay","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]},{"role":"user","parts":[{"functionResponse":{"id":"id1","name":"Read","response":{"result":"ok"}}}]}]}}`)
-	payload = sanitizeAntigravityGeminiRequestSignatures("gemini-3-flash-agent", payload)
 	out, _, err := prepareAntigravityGeminiReasoningReplayPayload(context.Background(), "gemini-3-flash-agent", cliproxyexecutor.Request{}, cliproxyexecutor.Options{}, payload)
 	if err != nil {
 		t.Fatalf("prepare error: %v", err)
@@ -586,7 +585,6 @@ func TestPrepareAntigravityGeminiReasoningReplayRestoresSyntheticParallelCallsWi
 	}
 
 	rebuilt := []byte(`{"sessionId":"parallel-omitted-synthetic-calls","request":{"contents":[{"role":"user","parts":[{"text":"run both"}]},{"role":"user","parts":[{"functionResponse":{"id":"id1","name":"run","response":{"result":"one"}}},{"functionResponse":{"id":"id2","name":"run","response":{"result":"two"}}}]}]}}`)
-	rebuilt = sanitizeAntigravityGeminiRequestSignatures(model, rebuilt)
 	out, _, errPrepare := prepareAntigravityGeminiReasoningReplayPayload(context.Background(), model, cliproxyexecutor.Request{}, cliproxyexecutor.Options{}, rebuilt)
 	if errPrepare != nil {
 		t.Fatal(errPrepare)

@@ -74,12 +74,11 @@ const pluginIdentifier = "claude-web-search-router"
 type routeBackend string
 
 const (
-	backendFallback          routeBackend = "fallback"
-	backendAntigravityGoogle routeBackend = "antigravity_google"
-	backendCodexWebSearch    routeBackend = "codex_web_search"
-	backendXAIWebSearch      routeBackend = "xai_web_search"
-	backendTavily            routeBackend = "tavily"
-	backendDefaultProvider   routeBackend = "default_provider"
+	backendFallback        routeBackend = "fallback"
+	backendCodexWebSearch  routeBackend = "codex_web_search"
+	backendXAIWebSearch    routeBackend = "xai_web_search"
+	backendTavily          routeBackend = "tavily"
+	backendDefaultProvider routeBackend = "default_provider"
 )
 
 var currentConfig atomic.Value
@@ -102,7 +101,6 @@ type lifecycleRequest struct {
 type pluginConfig struct {
 	Enabled              bool     `yaml:"enabled"`
 	Route                string   `yaml:"route"`
-	AntigravityModel     string   `yaml:"antigravity_model"`
 	CodexModel           string   `yaml:"codex_model"`
 	XAIModel             string   `yaml:"xai_model"`
 	DefaultProvider      string   `yaml:"default_provider"`
@@ -239,7 +237,6 @@ func decodeConfig(raw []byte) (pluginConfig, error) {
 		return pluginConfig{}, errUnmarshal
 	}
 	cfg.Route = strings.TrimSpace(cfg.Route)
-	cfg.AntigravityModel = strings.TrimSpace(cfg.AntigravityModel)
 	cfg.CodexModel = strings.TrimSpace(cfg.CodexModel)
 	cfg.XAIModel = strings.TrimSpace(cfg.XAIModel)
 	cfg.DefaultProvider = strings.ToLower(strings.TrimSpace(cfg.DefaultProvider))
@@ -266,16 +263,15 @@ func pluginRegistration() registration {
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "When false, the router declines all Claude web_search requests."},
 				{Name: "route", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{
-					string(backendFallback), string(backendAntigravityGoogle), string(backendCodexWebSearch),
+					string(backendFallback), string(backendCodexWebSearch),
 					string(backendXAIWebSearch), string(backendTavily), string(backendDefaultProvider),
-				}, Description: "Backend for Claude Code web_search. fallback (default): antigravity → codex → xai → tavily."},
-				{Name: "antigravity_model", Type: pluginapi.ConfigFieldTypeString, Description: "Antigravity googleSearch model (empty: registry lookup, then first supports_web_search)."},
+				}, Description: "Backend for Claude Code web_search. fallback (default): codex → xai → tavily."},
 				{Name: "codex_model", Type: pluginapi.ConfigFieldTypeString, Description: "Codex Responses model for web_search (empty defaults to gpt-5.4, never client Claude model)."},
 				{Name: "xai_model", Type: pluginapi.ConfigFieldTypeString, Description: "xAI Responses model with web_search (empty uses grok-4.3, not the client Claude model)."},
 				{Name: "default_provider", Type: pluginapi.ConfigFieldTypeString, Description: "Built-in provider key when route=default_provider."},
 				{Name: "default_provider_model", Type: pluginapi.ConfigFieldTypeString, Description: "Optional execution model on default_provider route."},
 				{Name: "tavily_api_keys", Type: pluginapi.ConfigFieldTypeArray, Description: "Tavily API keys (round-robin) when route=tavily."},
-				{Name: "require_web_search_only", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Require tools to be exclusively typed web_search (matches antigravity-only path)."},
+				{Name: "require_web_search_only", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Require tools to be exclusively typed web_search."},
 			},
 		},
 		Capabilities: registrationCapability{

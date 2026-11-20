@@ -1012,16 +1012,12 @@ func TestAntigravityConcurrentAuthUpdatePreservesBothNewTokenAndPersistedHints(t
 	}
 }
 
-func TestPreservedGeminiDiscoveryUsesAccountCatalogAndExclusions(t *testing.T) {
+func TestNativeGeminiDiscoveryUsesAccountCatalogAndExclusions(t *testing.T) {
 	const newModel = "gemini-future-fixture"
 	auth := &coreauth.Auth{Provider: "antigravity", Attributes: map[string]string{"excluded_models": "gemini-excluded-fixture"}}
 	hints := antigravityModelCapabilityHints{ModelIDs: map[string]struct{}{newModel: {}, "gemini-excluded-fixture": {}, "internal-fixture": {}}}
 	cfg := &config.Config{}
 	service := &Service{}
-	if got := service.antigravityModelsForHintsWithConfig(auth, hints, cfg); len(got) != 0 {
-		t.Fatalf("unexpected legacy catalog %v", got)
-	}
-	cfg.Antigravity.PreserveGeminiRequests = true
 	got := service.antigravityModelsForHintsWithConfig(auth, hints, cfg)
 	if len(got) != 1 || got[0].ID != newModel {
 		t.Fatalf("unexpected native catalog %v", got)

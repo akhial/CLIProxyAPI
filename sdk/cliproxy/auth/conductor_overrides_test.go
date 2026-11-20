@@ -773,7 +773,7 @@ func TestManagerExecute_AntigravityInvalidGrantFallsBackAndSuspendsAuth(t *testi
 
 	request := cliproxyexecutor.Request{Model: model}
 	for i := 0; i < 2; i++ {
-		resp, errExecute := m.Execute(context.Background(), []string{"antigravity"}, request, cliproxyexecutor.Options{})
+		resp, errExecute := m.Execute(context.Background(), []string{"antigravity"}, request, cliproxyexecutor.Options{SourceFormat: "gemini"})
 		if errExecute != nil {
 			t.Fatalf("execute %d error = %v, want success", i, errExecute)
 		}
@@ -847,7 +847,7 @@ func TestManagerExecuteStream_AntigravityInvalidGrantFallsBackAndSuspendsAuth(t 
 
 	request := cliproxyexecutor.Request{Model: model}
 	for i := 0; i < 2; i++ {
-		streamResult, errExecute := m.ExecuteStream(context.Background(), []string{"antigravity"}, request, cliproxyexecutor.Options{})
+		streamResult, errExecute := m.ExecuteStream(context.Background(), []string{"antigravity"}, request, cliproxyexecutor.Options{SourceFormat: "gemini"})
 		if errExecute != nil {
 			t.Fatalf("execute stream %d error = %v, want success", i, errExecute)
 		}

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
@@ -103,7 +104,7 @@ func FetchAntigravityAvailableModels(ctx context.Context, req AntigravityModelPr
 	}
 	userAgent := strings.TrimSpace(req.UserAgent)
 	if userAgent == "" {
-		userAgent = AntigravityUserAgent()
+		userAgent = misc.AntigravityGatewayUserAgent
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+accessToken)

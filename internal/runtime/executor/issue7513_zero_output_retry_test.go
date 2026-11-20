@@ -13,7 +13,6 @@ import (
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
-	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/wsrelay"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -50,18 +49,12 @@ func TestIssue7513_AntigravityZeroOutputAbnormalFinishReturns502BeforeBootstrap(
 	reasons := []string{"MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL", "MALFORMED_RESPONSE"}
 	formats := []sdktranslator.Format{
 		sdktranslator.FormatGemini,
-		sdktranslator.FormatClaude,
-		sdktranslator.FormatOpenAI,
-		sdktranslator.FormatOpenAIResponse,
 	}
 
 	for _, reason := range reasons {
 		for _, format := range formats {
 			for _, model := range []string{"gemini-4-hydrogen", "gemini-3-pro"} {
 				// gemini-3-pro exercises AntigravityExecutor.executeClaudeNonStream in Execute().
-				if model == "gemini-3-pro" && format != sdktranslator.FormatClaude && format != sdktranslator.FormatGemini {
-					continue
-				}
 				t.Run(reason+"/"+format.String()+"/"+model, func(t *testing.T) {
 					body := `{"response":{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"` + reason + `"}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":10,"thoughtsTokenCount":313,"totalTokenCount":443},"modelVersion":"` + model + `","responseId":"resp-ag-7513"}}`
 					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -613,18 +606,12 @@ func TestIssue7513_AntigravityPostThinkingZeroOutputEmitsTerminalError(t *testin
 }
 
 func TestIssue7513_PostThinkingSplitUsageClaudeEmitsBlockStopAndError(t *testing.T) {
-	for _, provider := range []string{"antigravity", "gemini"} {
+	for _, provider := range []string{"gemini"} {
 		t.Run(provider, func(t *testing.T) {
 			var frame1, frame2, frame3 string
-			if provider == "antigravity" {
-				frame1 = `{"response":{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"planning"}]}}],"modelVersion":"gemini-4-hydrogen","responseId":"resp-split-1"}}`
-				frame2 = `{"response":{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"modelVersion":"gemini-4-hydrogen","responseId":"resp-split-1"}}`
-				frame3 = `{"response":{"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":10,"thoughtsTokenCount":313,"totalTokenCount":443},"modelVersion":"gemini-4-hydrogen","responseId":"resp-split-1"}}`
-			} else {
-				frame1 = `{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"planning"}]}}],"modelVersion":"gemini-4-argon","responseId":"resp-split-1"}`
-				frame2 = `{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"modelVersion":"gemini-4-argon","responseId":"resp-split-1"}`
-				frame3 = `{"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":10,"thoughtsTokenCount":313,"totalTokenCount":443},"modelVersion":"gemini-4-argon","responseId":"resp-split-1"}`
-			}
+			frame1 = `{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"planning"}]}}],"modelVersion":"gemini-4-argon","responseId":"resp-split-1"}`
+			frame2 = `{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"modelVersion":"gemini-4-argon","responseId":"resp-split-1"}`
+			frame3 = `{"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":10,"thoughtsTokenCount":313,"totalTokenCount":443},"modelVersion":"gemini-4-argon","responseId":"resp-split-1"}`
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
@@ -635,26 +622,11 @@ func TestIssue7513_PostThinkingSplitUsageClaudeEmitsBlockStopAndError(t *testing
 			var exec cliproxyauth.ProviderExecutor
 			var auth *cliproxyauth.Auth
 			model := "gemini-4-argon"
-			if provider == "antigravity" {
-				model = "gemini-4-hydrogen"
-				exec = NewAntigravityExecutor(&config.Config{})
-				auth = &cliproxyauth.Auth{
-					ID:       "split-ag-" + t.Name(),
-					Provider: "antigravity",
-					Metadata: map[string]any{
-						"access_token": "token-123",
-						"expired":      time.Now().Add(24 * time.Hour).Format(time.RFC3339),
-						"project_id":   "project-1",
-					},
-					Attributes: map[string]string{"base_url": server.URL},
-				}
-			} else {
-				exec = NewGeminiExecutor(&config.Config{})
-				auth = &cliproxyauth.Auth{
-					ID:         "split-gem-" + t.Name(),
-					Provider:   "gemini",
-					Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
-				}
+			exec = NewGeminiExecutor(&config.Config{})
+			auth = &cliproxyauth.Auth{
+				ID:         "split-gem-" + t.Name(),
+				Provider:   "gemini",
+				Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
 			}
 
 			capture := &malformedFunctionCallUsageCapture{authID: auth.ID, records: make(chan usage.Record, 1)}
@@ -703,18 +675,12 @@ func TestIssue7513_PostThinkingSplitUsageClaudeEmitsBlockStopAndError(t *testing
 }
 
 func TestIssue7513_EarlyPreliminaryUsageDoesNotLoseFinalUsageOnZeroOutputFailure(t *testing.T) {
-	for _, provider := range []string{"antigravity", "gemini"} {
+	for _, provider := range []string{"gemini"} {
 		t.Run(provider, func(t *testing.T) {
 			var frame1, frame2, frame3 string
-			if provider == "antigravity" {
-				frame1 = `{"response":{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"planning"}]}}],"usageMetadata":{"promptTokenCount":120,"totalTokenCount":120},"modelVersion":"gemini-4-hydrogen","responseId":"resp-prelim-1"}}`
-				frame2 = `{"response":{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"modelVersion":"gemini-4-hydrogen","responseId":"resp-prelim-1"}}`
-				frame3 = `{"response":{"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":10,"thoughtsTokenCount":313,"totalTokenCount":443},"modelVersion":"gemini-4-hydrogen","responseId":"resp-prelim-1"}}`
-			} else {
-				frame1 = `{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"planning"}]}}],"usageMetadata":{"promptTokenCount":120,"totalTokenCount":120},"modelVersion":"gemini-4-argon","responseId":"resp-prelim-1"}`
-				frame2 = `{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"modelVersion":"gemini-4-argon","responseId":"resp-prelim-1"}`
-				frame3 = `{"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":10,"thoughtsTokenCount":313,"totalTokenCount":443},"modelVersion":"gemini-4-argon","responseId":"resp-prelim-1"}`
-			}
+			frame1 = `{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"planning"}]}}],"usageMetadata":{"promptTokenCount":120,"totalTokenCount":120},"modelVersion":"gemini-4-argon","responseId":"resp-prelim-1"}`
+			frame2 = `{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"modelVersion":"gemini-4-argon","responseId":"resp-prelim-1"}`
+			frame3 = `{"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":10,"thoughtsTokenCount":313,"totalTokenCount":443},"modelVersion":"gemini-4-argon","responseId":"resp-prelim-1"}`
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
@@ -725,26 +691,11 @@ func TestIssue7513_EarlyPreliminaryUsageDoesNotLoseFinalUsageOnZeroOutputFailure
 			var exec cliproxyauth.ProviderExecutor
 			var auth *cliproxyauth.Auth
 			model := "gemini-4-argon"
-			if provider == "antigravity" {
-				model = "gemini-4-hydrogen"
-				exec = NewAntigravityExecutor(&config.Config{})
-				auth = &cliproxyauth.Auth{
-					ID:       "prelim-ag-" + t.Name(),
-					Provider: "antigravity",
-					Metadata: map[string]any{
-						"access_token": "token-123",
-						"expired":      time.Now().Add(24 * time.Hour).Format(time.RFC3339),
-						"project_id":   "project-1",
-					},
-					Attributes: map[string]string{"base_url": server.URL},
-				}
-			} else {
-				exec = NewGeminiExecutor(&config.Config{})
-				auth = &cliproxyauth.Auth{
-					ID:         "prelim-gem-" + t.Name(),
-					Provider:   "gemini",
-					Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
-				}
+			exec = NewGeminiExecutor(&config.Config{})
+			auth = &cliproxyauth.Auth{
+				ID:         "prelim-gem-" + t.Name(),
+				Provider:   "gemini",
+				Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
 			}
 
 			capture := &malformedFunctionCallUsageCapture{authID: auth.ID, records: make(chan usage.Record, 1)}
@@ -780,16 +731,11 @@ func TestIssue7513_EarlyPreliminaryUsageDoesNotLoseFinalUsageOnZeroOutputFailure
 }
 
 func TestIssue7513_EmptyFunctionCallPlaceholderReturns502(t *testing.T) {
-	for _, provider := range []string{"antigravity", "gemini"} {
+	for _, provider := range []string{"gemini"} {
 		t.Run(provider, func(t *testing.T) {
 			var body string
 			model := "gemini-4-argon"
-			if provider == "antigravity" {
-				model = "gemini-4-hydrogen"
-				body = `{"response":{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{}}]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":60,"candidatesTokenCount":1,"totalTokenCount":61},"modelVersion":"gemini-4-hydrogen"}}`
-			} else {
-				body = `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{}}]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":60,"candidatesTokenCount":1,"totalTokenCount":61},"modelVersion":"gemini-4-argon"}`
-			}
+			body = `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{}}]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":60,"candidatesTokenCount":1,"totalTokenCount":61},"modelVersion":"gemini-4-argon"}`
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "streamGenerateContent") {
 					w.Header().Set("Content-Type", "text/event-stream")
@@ -803,25 +749,11 @@ func TestIssue7513_EmptyFunctionCallPlaceholderReturns502(t *testing.T) {
 
 			var exec cliproxyauth.ProviderExecutor
 			var auth *cliproxyauth.Auth
-			if provider == "antigravity" {
-				exec = NewAntigravityExecutor(&config.Config{})
-				auth = &cliproxyauth.Auth{
-					ID:       "empty-fc-ag-" + t.Name(),
-					Provider: "antigravity",
-					Metadata: map[string]any{
-						"access_token": "token-123",
-						"expired":      time.Now().Add(24 * time.Hour).Format(time.RFC3339),
-						"project_id":   "project-1",
-					},
-					Attributes: map[string]string{"base_url": server.URL},
-				}
-			} else {
-				exec = NewGeminiExecutor(&config.Config{})
-				auth = &cliproxyauth.Auth{
-					ID:         "empty-fc-gem-" + t.Name(),
-					Provider:   "gemini",
-					Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
-				}
+			exec = NewGeminiExecutor(&config.Config{})
+			auth = &cliproxyauth.Auth{
+				ID:         "empty-fc-gem-" + t.Name(),
+				Provider:   "gemini",
+				Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL},
 			}
 
 			resp, errExec := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
@@ -874,7 +806,11 @@ func TestIssue7513_EmptyFunctionCallPlaceholderReturns502(t *testing.T) {
 
 func TestIssue7513_PartialVisibleTextWithAbnormalFinishIsPreserved(t *testing.T) {
 	for _, provider := range []string{"antigravity", "gemini"} {
-		for _, format := range []sdktranslator.Format{sdktranslator.FormatClaude, sdktranslator.FormatGemini} {
+		formats := []sdktranslator.Format{sdktranslator.FormatGemini}
+		if provider != "antigravity" {
+			formats = append(formats, sdktranslator.FormatClaude)
+		}
+		for _, format := range formats {
 			t.Run(provider+"/"+format.String(), func(t *testing.T) {
 				var nonStreamBody, streamChunk1, streamChunk2 string
 				model := "gemini-4-argon"
@@ -1027,66 +963,6 @@ func TestIssue7513_ThoughtChunkStreamsSynchronouslyBeforeNextChunkForTTFT(t *tes
 		if chunk.Err != nil {
 			t.Fatalf("unexpected trailing chunk error: %v", chunk.Err)
 		}
-	}
-}
-
-func TestIssue7513_ZeroOutputAbnormalFinishDoesNotCommitReasoningReplay(t *testing.T) {
-	internalcache.ClearAntigravityReasoningReplayCache()
-	t.Cleanup(internalcache.ClearAntigravityReasoningReplayCache)
-
-	sessionKey := "session:replay-zero-output-7513"
-	body := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"thinking","thoughtSignature":"sig-should-not-cache"}]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":50,"thoughtsTokenCount":10,"totalTokenCount":60},"modelVersion":"gemini-3-flash-agent"}}`
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "streamGenerateContent") {
-			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = io.WriteString(w, "data: "+body+"\n\n")
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, body)
-	}))
-	defer server.Close()
-
-	auth := &cliproxyauth.Auth{
-		ID:       t.Name(),
-		Provider: "antigravity",
-		Metadata: map[string]any{
-			"access_token": "token-123",
-			"expired":      time.Now().Add(24 * time.Hour).Format(time.RFC3339),
-			"project_id":   "project-1",
-		},
-		Attributes: map[string]string{"base_url": server.URL},
-	}
-	exec := NewAntigravityExecutor(&config.Config{})
-	opts := cliproxyexecutor.Options{
-		SourceFormat:   sdktranslator.FormatGemini,
-		ResponseFormat: sdktranslator.FormatGemini,
-		Metadata:       map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: sessionKey},
-	}
-
-	_, errExec := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "gemini-3-flash-agent",
-		Payload: issue7513RequestPayload(sdktranslator.FormatGemini, "gemini-3-flash-agent", false),
-	}, opts)
-	if errExec == nil {
-		t.Fatal("Execute() error = nil, want 502")
-	}
-	if items, ok := internalcache.GetAntigravityReasoningReplayItems("gemini-3-flash-agent", sessionKey); ok && len(items) > 0 {
-		t.Fatalf("non-stream zero-output failure unexpectedly committed replay items: %d", len(items))
-	}
-
-	opts.Stream = true
-	streamRes, errStream := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "gemini-3-flash-agent",
-		Payload: issue7513RequestPayload(sdktranslator.FormatGemini, "gemini-3-flash-agent", true),
-	}, opts)
-	if errStream != nil {
-		t.Fatalf("ExecuteStream() error = %v", errStream)
-	}
-	for range streamRes.Chunks {
-	}
-	if items, ok := internalcache.GetAntigravityReasoningReplayItems("gemini-3-flash-agent", sessionKey); ok && len(items) > 0 {
-		t.Fatalf("stream zero-output failure unexpectedly committed replay items: %d", len(items))
 	}
 }
 

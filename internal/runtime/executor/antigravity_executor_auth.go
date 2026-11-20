@@ -76,7 +76,6 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 	accessToken := metaStringValue(auth.Metadata, "access_token")
 	expiry, _ := auth.ExpirationTime()
 	if accessToken != "" && expiry.After(time.Now().Add(antigravityRequestTokenSafetyWindow)) {
-		e.maybeRefreshAntigravityCreditsHint(ctx, auth, accessToken)
 		return accessToken, nil, nil
 	}
 	refreshCtx := context.Background()
@@ -93,7 +92,6 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 		if strings.TrimSpace(token) == "" {
 			return "", nil, statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 		}
-		e.maybeRefreshAntigravityCreditsHint(ctx, refreshed, token)
 		return token, refreshed, nil
 	}
 
@@ -146,7 +144,6 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	if errProject := e.ensureAntigravityProjectID(ctx, auth, tokenResp.AccessToken); errProject != nil {
 		log.Warnf("antigravity executor: ensure project id failed: %v", errProject)
 	}
-	e.queueAntigravityCreditsRefresh(ctx, auth, tokenResp.AccessToken, 0)
 	return auth, nil
 }
 

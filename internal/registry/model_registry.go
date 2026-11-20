@@ -346,9 +346,9 @@ func ResolveResponsesWebSearchCapability(routes []NativeCapabilityRoute) *bool {
 func responsesWebSearchProviderPathSupport(provider string) *bool {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	switch provider {
-	case "codex", "xai", "claude", "antigravity":
+	case "codex", "xai", "claude":
 		return boolPointer(true)
-	case "openai", "openai-compatibility", "gemini", "aistudio", "vertex", "kimi", "kimi-ai", "kimi.ai", "kimi.com", "interactions", "gemini-interactions":
+	case "antigravity", "openai", "openai-compatibility", "gemini", "aistudio", "vertex", "kimi", "kimi-ai", "kimi.ai", "kimi.com", "interactions", "gemini-interactions":
 		return boolPointer(false)
 	default:
 		if strings.HasPrefix(provider, "openai-compatible-") {

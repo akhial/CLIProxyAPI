@@ -20,27 +20,17 @@ import (
 // CountTokens counts tokens for the given request using the Antigravity API.
 func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	if err := validateAntigravityRoute(baseModel, opts); err != nil {
+		return cliproxyexecutor.Response{}, err
+	}
 	if antigravityInTOSPause(e.cfg, auth) {
 		return cliproxyexecutor.Response{}, statusErr{code: http.StatusServiceUnavailable, msg: "antigravity pool paused after TOS_VIOLATION"}
 	}
 
-	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
-	to := sdktranslator.FromString("antigravity")
+	to := sdktranslator.FormatAntigravity
 	respCtx := context.WithValue(ctx, "alt", opts.Alt)
-	originalPayloadSource := req.Payload
-	if len(opts.OriginalRequest) > 0 {
-		originalPayloadSource = opts.OriginalRequest
-	}
-	originalPayloadSource, errValidate := validateAntigravityRequestSignatures(ctx, baseModel, from, originalPayloadSource)
-	if errValidate != nil {
-		return cliproxyexecutor.Response{}, errValidate
-	}
-	req.Payload = originalPayloadSource
-
-	// Prepare payload once (doesn't depend on baseURL). A translation refusal is
-	// observed before the token refresh or any upstream call.
-	doc, baseline, errTranslate := e.translatePayload(ctx, baseModel, req, opts, false)
+	doc, baseline, errTranslate := antigravityPayload(req, opts)
 	if errTranslate != nil {
 		return cliproxyexecutor.Response{}, errTranslate
 	}
@@ -55,26 +45,6 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 	cliproxyauth.NotifyAccessTokenFingerprint(ctx, auth)
 	if strings.TrimSpace(token) == "" {
 		return cliproxyexecutor.Response{}, statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
-	}
-
-	if !e.preserveGeminiRequest(baseModel, opts) {
-		if errThinking := helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); errThinking != nil {
-			return cliproxyexecutor.Response{}, errThinking
-		}
-		e.obfuscateSensitiveWordsDoc(doc)
-		helps.PrepareAntigravityClaudeStructuredOutputDoc(baseModel, doc)
-		sanitizeAntigravityGeminiRequestSignaturesDoc(baseModel, doc)
-		if _, errReplay := prepareAntigravityGeminiCountTokensReasoningReplayPayloadDoc(ctx, baseModel, req, opts, doc); errReplay != nil {
-			return cliproxyexecutor.Response{}, errReplay
-		}
-		ensureAntigravityGeminiLeadingUserContentDoc(baseModel, doc)
-
-		_ = doc.Delete("project")
-		_ = doc.Delete("model")
-		_ = doc.Delete("request.safetySettings")
-		_ = doc.Delete("request.toolConfig")
-		_ = doc.Delete("request.labels")
-		_ = doc.Delete("request.sessionId")
 	}
 
 	base := resolveAntigravityRequestBaseURL(auth)
@@ -108,7 +78,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 	if host := resolveHost(base); host != "" {
 		httpReq.Host = host
 	}
-	e.setAntigravityRequestHeaders(httpReq, auth, baseModel, opts)
+	setAntigravityRequestHeaders(httpReq, opts)
 
 	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 		URL:       requestURL.String(),

@@ -5,14 +5,14 @@ import "testing"
 func TestSortBackendsByPenaltyDeprioritizesFailures(t *testing.T) {
 	resetBackendPenaltiesForTest()
 	t.Cleanup(resetBackendPenaltiesForTest)
-	recordBackendFailure(backendAntigravityGoogle)
-	recordBackendFailure(backendAntigravityGoogle)
+	recordBackendFailure(backendTavily)
+	recordBackendFailure(backendTavily)
 	ordered := sortBackendsByPenalty([]routeBackend{
-		backendAntigravityGoogle,
+		backendTavily,
 		backendCodexWebSearch,
 		backendXAIWebSearch,
 	})
 	if ordered[0] != backendCodexWebSearch {
-		t.Fatalf("ordered = %v, want codex first after antigravity penalty", ordered)
+		t.Fatalf("ordered = %v, want codex first after Tavily penalty", ordered)
 	}
 }

@@ -251,7 +251,7 @@ func fetchModelsFromBaseURLs(ctx context.Context, auth *coreauth.Auth, baseURLs 
 			httpReq.Close = true
 			httpReq.Header.Set("Content-Type", "application/json")
 			httpReq.Header.Set("Authorization", "Bearer "+accessToken)
-			httpReq.Header.Set("User-Agent", misc.AntigravityUserAgent())
+			httpReq.Header.Set("User-Agent", misc.AntigravityGatewayUserAgent)
 
 			httpClient := client
 			if httpClient == nil {
@@ -288,12 +288,12 @@ func fetchModelsFromBaseURLs(ctx context.Context, auth *coreauth.Auth, baseURLs 
 
 			for originalName, modelData := range result.Map() {
 				modelID := strings.Clone(strings.TrimSpace(originalName))
-				if modelID == "" {
+				if !strings.HasPrefix(modelID, "gemini-") {
 					continue
 				}
 				// Skip internal/experimental models
 				switch modelID {
-				case "chat_20706", "chat_23310", "tab_flash_lite_preview", "tab_jump_flash_lite_preview", "gemini-2.5-flash-thinking", "gemini-2.5-pro":
+				case "gemini-2.5-flash-thinking", "gemini-2.5-pro":
 					continue
 				}
 

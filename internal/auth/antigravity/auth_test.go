@@ -122,10 +122,7 @@ func assertLoadCodeAssistHeaders(t *testing.T, req *http.Request) {
 		t.Fatalf("X-Goog-Api-Client = %q, want empty", got)
 	}
 	userAgent := req.Header.Get("User-Agent")
-	if !strings.HasPrefix(userAgent, "antigravity/hub/") {
-		t.Fatalf("User-Agent = %q", userAgent)
-	}
-	if strings.Contains(userAgent, "google-api-nodejs-client/") {
+	if userAgent != "CLIProxyAPI" {
 		t.Fatalf("User-Agent = %q", userAgent)
 	}
 }
@@ -138,14 +135,11 @@ func assertOnboardUserHeaders(t *testing.T, req *http.Request) {
 	if got := req.Header.Get("Accept"); got != "*/*" {
 		t.Fatalf("Accept = %q", got)
 	}
-	if got := req.Header.Get("X-Goog-Api-Client"); got != "gl-node/22.21.1" {
+	if got := req.Header.Get("X-Goog-Api-Client"); got != "" {
 		t.Fatalf("X-Goog-Api-Client = %q", got)
 	}
 	userAgent := req.Header.Get("User-Agent")
-	if !strings.HasPrefix(userAgent, "antigravity/hub/") {
-		t.Fatalf("User-Agent = %q", userAgent)
-	}
-	if !strings.Contains(userAgent, "google-api-nodejs-client/10.3.0") {
+	if userAgent != "CLIProxyAPI" {
 		t.Fatalf("User-Agent = %q", userAgent)
 	}
 }

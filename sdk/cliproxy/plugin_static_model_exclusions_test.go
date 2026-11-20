@@ -27,9 +27,13 @@ type pluginStaticModelRegistrar struct {
 }
 
 func (r pluginStaticModelRegistrar) RegisterModels(context.Context, pluginapi.ModelRegistrationRequest) (pluginapi.ModelRegistrationResponse, error) {
+	models := []pluginapi.ModelInfo{{ID: pluginStaticGlobalModel}, {ID: pluginStaticCredentialModel}}
+	if r.provider == "antigravity" {
+		models = []pluginapi.ModelInfo{{ID: "gemini-plugin-global"}, {ID: "gemini-plugin-credential"}, {ID: "non-gemini-plugin"}}
+	}
 	return pluginapi.ModelRegistrationResponse{
 		Provider: r.provider,
-		Models:   []pluginapi.ModelInfo{{ID: pluginStaticGlobalModel}, {ID: pluginStaticCredentialModel}},
+		Models:   models,
 	}, nil
 }
 
@@ -181,7 +185,7 @@ func TestRegisterModelsForAuth_PluginStaticExclusionsDoNotMatchNativeAliases(t *
 
 func TestAntigravityModelsForHints_PluginStaticModelsFollowExclusions(t *testing.T) {
 	const provider = "antigravity"
-	cfg := &config.Config{OAuthExcludedModels: map[string][]string{provider: {pluginStaticGlobalModel}}}
+	cfg := &config.Config{OAuthExcludedModels: map[string][]string{provider: {"gemini-plugin-global"}}}
 	service := &Service{cfg: cfg, pluginHost: newPluginStaticModelHost(t, provider)}
 	hints := antigravityModelCapabilityHints{ModelIDs: map[string]struct{}{"gemini-3.1-flash-lite": {}}}
 
@@ -192,7 +196,7 @@ func TestAntigravityModelsForHints_PluginStaticModelsFollowExclusions(t *testing
 		wantCredValue bool
 	}{
 		{name: "global rules", wantGlobal: false, wantCredValue: true},
-		{name: "credential rules override global", ownRules: pluginStaticCredentialModel, wantGlobal: true, wantCredValue: false},
+		{name: "credential rules override global", ownRules: "gemini-plugin-credential", wantGlobal: true, wantCredValue: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			auth := antigravityTestAuth(t.Name(), "http://127.0.0.1:1")
@@ -205,8 +209,11 @@ func TestAntigravityModelsForHints_PluginStaticModelsFollowExclusions(t *testing
 				present[model.ID] = true
 			}
 
-			if present[pluginStaticGlobalModel] != tc.wantGlobal || present[pluginStaticCredentialModel] != tc.wantCredValue {
-				t.Fatalf("plugin static models = (%t,%t), want (%t,%t); models = %v", present[pluginStaticGlobalModel], present[pluginStaticCredentialModel], tc.wantGlobal, tc.wantCredValue, present)
+			if present["non-gemini-plugin"] {
+				t.Fatal("published an unsupported Antigravity plugin model")
+			}
+			if present["gemini-plugin-global"] != tc.wantGlobal || present["gemini-plugin-credential"] != tc.wantCredValue {
+				t.Fatalf("plugin static models = (%t,%t), want (%t,%t); models = %v", present["gemini-plugin-global"], present["gemini-plugin-credential"], tc.wantGlobal, tc.wantCredValue, present)
 			}
 		})
 	}

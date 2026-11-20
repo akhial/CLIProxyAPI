@@ -11,7 +11,6 @@ import (
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
-	log "github.com/sirupsen/logrus"
 )
 
 func legacyAntigravityCountClaudeToolProvenanceIDs(payload []byte) int {
@@ -190,53 +189,4 @@ func legacyRepairAntigravityGeminiFunctionResponseNames(rawJSON []byte) []byte {
 		return true
 	})
 	return out
-}
-
-func legacySanitizeAntigravityRequestSchemas(payloadStr string, useAntigravitySchema bool) string {
-	for _, base := range antigravityFunctionDeclarationPaths(payloadStr) {
-		oldPath := base + ".parametersJsonSchema"
-		if !ojson.Get(payloadStr, oldPath).Exists() {
-			continue
-		}
-		renamed, errRename := util.RenameKey(payloadStr, oldPath, base+".parameters")
-		if errRename != nil {
-			log.Debugf("antigravity: failed to rename %s: %v", oldPath, errRename)
-			continue
-		}
-		payloadStr = renamed
-	}
-
-	toolSchemaCleaner := util.CleanJSONSchemaForGemini
-	if useAntigravitySchema {
-		toolSchemaCleaner = util.CleanJSONSchemaForAntigravity
-	}
-	responseSchemaCleaner := util.CleanJSONSchemaForAntigravityResponse
-	cleanNestedToolSchema := func(schemaRaw string) string {
-		return cleanNestedSchema(toolSchemaCleaner, schemaRaw)
-	}
-	payloadStr = legacyCleanAntigravitySchemasAtPaths(
-		payloadStr,
-		antigravityDeclarationSchemaPaths(payloadStr),
-		cleanNestedToolSchema,
-	)
-	return legacyCleanAntigravitySchemasAtPaths(
-		payloadStr,
-		antigravityGenerationSchemaPaths(payloadStr),
-		responseSchemaCleaner,
-	)
-}
-
-func legacyCleanAntigravitySchemasAtPaths(payloadStr string, schemaPaths []string, clean func(string) string) string {
-	for _, schemaPath := range schemaPaths {
-		schema := ojson.Get(payloadStr, schemaPath)
-		if !schema.Exists() {
-			continue
-		}
-		updated, errSet := ojson.SetRawBytes([]byte(payloadStr), schemaPath, []byte(clean(schema.Raw)))
-		if errSet != nil {
-			continue
-		}
-		payloadStr = string(updated)
-	}
-	return payloadStr
 }

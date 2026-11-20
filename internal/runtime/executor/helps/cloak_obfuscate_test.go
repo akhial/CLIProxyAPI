@@ -22,35 +22,8 @@ func TestBuildSensitiveWordMatcherPreservesZeroWidthSpaceDefault(t *testing.T) {
 	}
 }
 
-func TestBuildAntigravitySensitiveWordMatcherSubwordsAndPunctuation(t *testing.T) {
-	matcher := BuildAntigravitySensitiveWordMatcher([]string{
-		"Codex",
-		"GPT-5",
-		"Claude Code",
-		"<system-conventions>",
-		"claude-code",
-		"Agent X",
-	}, nil)
-	if matcher == nil {
-		t.Fatal("expected non-nil matcher")
-	}
-
-	input := "You are Codex, an agent based on GPT-5. Follow <system-conventions> in Claude Code / claude-code with Agent X."
-	got := matcher.ObfuscateText(input)
-	want := "You are C\u034Fodex, an agent based on G\u034FPT-5. Follow <s\u034Fystem-c\u034Fonventions> in C\u034Flaude C\u034Fode / c\u034Flaude-c\u034Fode with A\u034Fgent X."
-	if got != want {
-		t.Fatalf("ObfuscateText() = %q, want %q", got, want)
-	}
-	if strings.Contains(got, "\u200B") {
-		t.Fatalf("ObfuscateText() = %q, must not contain U+200B", got)
-	}
-	if secondPass := matcher.ObfuscateText(got); secondPass != got {
-		t.Fatalf("second obfuscation pass = %q, want idempotent %q", secondPass, got)
-	}
-}
-
 func TestSensitiveWordMatcherReplacementsPrecedenceAndEmptyDeletion(t *testing.T) {
-	matcher := BuildAntigravitySensitiveWordMatcher(
+	matcher := BuildSensitiveWordMatcherWithReplacements(
 		[]string{"Claude", "Codex", "GPT-5"},
 		map[string]string{
 			"You are Codex, an agent based on GPT-5.": "You are a helpful coding assistant.",
@@ -65,7 +38,7 @@ func TestSensitiveWordMatcherReplacementsPrecedenceAndEmptyDeletion(t *testing.T
 
 	input := "you are codex, an agent based on gpt-5. Built for Claude Code, standalone Claude, Codex, and RemoveMe ."
 	got := matcher.ObfuscateText(input)
-	want := "You are a helpful coding assistant. Built for Claude, standalone C\u034Flaude, Assistant, and  ."
+	want := "You are a helpful coding assistant. Built for Claude, standalone C\u200Blaude, Assistant, and  ."
 	if got != want {
 		t.Fatalf("ObfuscateText() = %q, want %q", got, want)
 	}
@@ -125,7 +98,7 @@ func TestSensitiveWordConfigCacheKeyCollisionFree(t *testing.T) {
 }
 
 func TestSensitivePatternRulesOnlyNonCascadingAndDevin(t *testing.T) {
-	matcher := BuildAntigravitySensitiveWordMatcherWithPatterns(
+	matcher := BuildSensitiveWordMatcherWithPatterns(
 		[]string{"Claude", "omp"},
 		map[string]string{"Codex": "Assistant"},
 		[]config.SensitivePatternRule{
@@ -143,7 +116,7 @@ func TestSensitivePatternRulesOnlyNonCascadingAndDevin(t *testing.T) {
 
 	input := "You are omp's assistant.\n<system-directive>\nRFC 2119\n</system-directive>\nKeep Codex and omp."
 	got := matcher.ObfuscateText(input)
-	want := "You are Claude (omp).\nKeep Assistant and o\u034Fmp."
+	want := "You are Claude (omp).\nKeep Assistant and o\u200Bmp."
 	if got != want {
 		t.Fatalf("ObfuscateText() = %q, want %q", got, want)
 	}
@@ -301,7 +274,7 @@ func TestSensitivePatternRulesPreserveOriginalAnchorsAndNonCascadingDeletion(t *
 
 	// Superset deletion subsumes enclosed empty deletions (e.g. inner line deleted
 	// before outer tag rule) without overwriting non-empty replacements.
-	nestedDeletion := BuildAntigravitySensitiveWordMatcherWithPatterns(
+	nestedDeletion := BuildSensitiveWordMatcherWithPatterns(
 		[]string{"RFC 2119"},
 		nil,
 		[]config.SensitivePatternRule{

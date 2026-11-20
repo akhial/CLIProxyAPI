@@ -212,7 +212,7 @@ func TestManager_NoForkAlias_BypassesCoolingAuthOnSubsequentRequest(t *testing.T
 	manager.RefreshSchedulerEntry(auth1.ID)
 	manager.RefreshSchedulerEntry(auth2.ID)
 
-	resp, errExecute := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{})
+	resp, errExecute := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 	if errExecute != nil {
 		t.Fatalf("execute error = %v, want success", errExecute)
 	}
@@ -489,8 +489,8 @@ func TestManager_NoForkAlias_CleanupAfterAliasRemoved(t *testing.T) {
 func TestManager_ForkTrue_RetainsStateAndSuspendsBoth(t *testing.T) {
 	const (
 		provider    = "antigravity"
-		routeModel  = "claude-opus-4-6"
-		targetModel = "claude-opus-4-6-thinking"
+		routeModel  = "gemini-pro-alias"
+		targetModel = "gemini-3.1-pro"
 	)
 
 	manager := NewManager(nil, nil, nil)
@@ -880,7 +880,7 @@ func TestManager_NoForkAlias_RealPersistenceRestore_BypassesCoolingAuth(t *testi
 	}
 
 	// Execute request on alias -> should skip freshAuth1 and select freshAuth2
-	resp, errExecute := manager2.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{})
+	resp, errExecute := manager2.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 	if errExecute != nil {
 		t.Fatalf("execute error: %v", errExecute)
 	}
@@ -1037,7 +1037,7 @@ func TestManager_NoForkAlias_MultipleAliases_BothSkipCoolingAuthEndToEnd(t *test
 	manager.RefreshSchedulerAll()
 
 	// Execute via routeModel1 -> skips auth1, selects auth2
-	resp1, errExecute1 := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel1}, cliproxyexecutor.Options{})
+	resp1, errExecute1 := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel1}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 	if errExecute1 != nil {
 		t.Fatalf("execute routeModel1: %v", errExecute1)
 	}
@@ -1049,7 +1049,7 @@ func TestManager_NoForkAlias_MultipleAliases_BothSkipCoolingAuthEndToEnd(t *test
 	}
 
 	// Execute via routeModel2 -> skips auth1, selects auth2
-	resp2, errExecute2 := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel2}, cliproxyexecutor.Options{})
+	resp2, errExecute2 := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel2}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 	if errExecute2 != nil {
 		t.Fatalf("execute routeModel2: %v", errExecute2)
 	}
@@ -1297,7 +1297,7 @@ func TestManager_NoForkAlias_ConcurrentReconcileAndMarkResult(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
-			_, _ = manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{})
+			_, _ = manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 			time.Sleep(time.Millisecond)
 		}
 	}()
@@ -1610,7 +1610,7 @@ func TestManager_NoForkAlias_RealDiskFileStoreRestore_BypassesCoolingAuth(t *tes
 	}
 
 	// Execute alias request -> should bypass cooling disk-auth-1 and select disk-auth-2
-	resp, errExecute := manager2.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{})
+	resp, errExecute := manager2.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 	if errExecute != nil {
 		t.Fatalf("execute error: %v", errExecute)
 	}
@@ -1735,7 +1735,7 @@ func TestManager_NoForkAlias_ConcurrentReconcileMarkResult_FullConsistency(t *te
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
-			_, _ = manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{})
+			_, _ = manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 			time.Sleep(50 * time.Microsecond)
 		}
 	}()
@@ -2682,7 +2682,7 @@ func TestManager_NoForkAlias_ConcurrentOperations_NaturalFinalConsistency(t *tes
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
-			_, _ = manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{})
+			_, _ = manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 			time.Sleep(100 * time.Microsecond)
 		}
 	}()
@@ -3000,7 +3000,7 @@ func TestManager_NoForkAlias_ChainedAlias_MarkResultTargetA_ReconcilePreservesSt
 	}
 
 	// Manager Execute for routeB must skip Auth1 (cooling on targetA) and execute on Auth2
-	resp, errExec := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeB}, cliproxyexecutor.Options{})
+	resp, errExec := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeB}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 	if errExec != nil {
 		t.Fatalf("manager.Execute failed: %v", errExec)
 	}

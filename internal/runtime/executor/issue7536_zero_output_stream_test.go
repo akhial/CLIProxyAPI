@@ -37,10 +37,7 @@ func TestIssue7536_AntigravitySignatureOnlyZeroOutputWithoutFinishReasonFails502
 	}
 
 	formats := []sdktranslator.Format{
-		sdktranslator.FormatOpenAI,
-		sdktranslator.FormatClaude,
 		sdktranslator.FormatGemini,
-		sdktranslator.FormatOpenAIResponse,
 	}
 
 	for _, variant := range variants {
@@ -145,10 +142,10 @@ func TestIssue7536_AntigravityLeadingSignatureOnlyFollowedByVisibleContentSuccee
 	exec := NewAntigravityExecutor(&config.Config{})
 	streamRes, errStream := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   "gemini-4-hydrogen",
-		Payload: issue7513RequestPayload(sdktranslator.FormatOpenAI, "gemini-4-hydrogen", true),
+		Payload: issue7513RequestPayload(sdktranslator.FormatGemini, "gemini-4-hydrogen", true),
 	}, cliproxyexecutor.Options{
-		SourceFormat:   sdktranslator.FormatOpenAI,
-		ResponseFormat: sdktranslator.FormatOpenAI,
+		SourceFormat:   sdktranslator.FormatGemini,
+		ResponseFormat: sdktranslator.FormatGemini,
 		Stream:         true,
 	})
 	if errStream != nil {
@@ -163,7 +160,7 @@ func TestIssue7536_AntigravityLeadingSignatureOnlyFollowedByVisibleContentSuccee
 		combined.Write(chunk.Payload)
 	}
 	out := combined.String()
-	if !strings.Contains(out, "recovered answer") || !strings.Contains(out, `"finish_reason":"stop"`) {
-		t.Fatalf("expected recovered answer and finish_reason stop, got: %s", out)
+	if !strings.Contains(out, "recovered answer") || !strings.Contains(out, `"finishReason":"STOP"`) {
+		t.Fatalf("expected recovered answer and finishReason STOP, got: %s", out)
 	}
 }

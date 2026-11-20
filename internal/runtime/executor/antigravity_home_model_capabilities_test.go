@@ -76,13 +76,13 @@ func TestAntigravityHomeModelThinkingLevelRemainsLevel(t *testing.T) {
 	manager.RegisterExecutor(NewAntigravityExecutor(cfg))
 	manager.PublishHomeDispatch(&antigravityHomeModelCapabilityDispatcher{baseURL: server.URL}, executionregistry.New(), 1)
 
-	payload := []byte(`{"model":"gemini-3.8-flash-high","reasoning_effort":"medium","messages":[{"role":"user","content":"hello"}]}`)
+	payload := []byte(`{"generationConfig":{"thinkingConfig":{"thinkingLevel":"medium"}},"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
 	_, errExecute := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{
 		Model:   "gemini-3.8-flash-high",
 		Payload: payload,
 	}, cliproxyexecutor.Options{
-		SourceFormat:    sdktranslator.FormatOpenAI,
-		ResponseFormat:  sdktranslator.FormatOpenAI,
+		SourceFormat:    sdktranslator.FormatGemini,
+		ResponseFormat:  sdktranslator.FormatGemini,
 		OriginalRequest: payload,
 	})
 	if errExecute != nil {

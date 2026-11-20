@@ -115,3 +115,12 @@ func TestExecuteStreamQuotaFailurePreservesCooldownAndScope(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusCodeFromError_UnwrapsStreamBootstrap429(t *testing.T) {
+	bootstrapErr := newStreamBootstrapError(&Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota exhausted"}, nil)
+	wrappedErr := fmt.Errorf("conductor stream failed: %w", bootstrapErr)
+
+	if status := statusCodeFromError(wrappedErr); status != http.StatusTooManyRequests {
+		t.Fatalf("statusCodeFromError() = %d, want %d", status, http.StatusTooManyRequests)
+	}
+}

@@ -13,10 +13,10 @@ This plugin demonstrates **ModelRouter** on Claude Code built-in `web_search` re
 
 | Value                    | Behavior                                                                                                                                                                                                                                                                                                  |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fallback` (**default**) | Plugin **executor** runs **antigravity → codex → xai → tavily** (built-ins via `host.model.*`, Tavily in-plugin). On **429/503/502**, tries the next backend in the same request. Backends that fail often are **deprioritized on later requests** (in-memory penalty; no extra config). |
-| `antigravity_google` / `codex_web_search` / `xai_web_search` / `tavily` | Same orchestration for that backend’s chain member(s): execution retry + penalty apply when multiple backends are eligible. |
+| `fallback` (**default**) | Plugin **executor** runs **codex → xai → tavily** (built-ins via `host.model.*`, Tavily in-plugin). On **429/503/502**, tries the next backend in the same request. Backends that fail often are **deprioritized on later requests** (in-memory penalty; no extra config). |
+| `codex_web_search` / `xai_web_search` / `tavily` | Same orchestration for that backend’s chain member(s): execution retry + penalty apply when multiple backends are eligible. |
 | `default_provider`             | `default_provider` + optional `default_provider_model` via built-in AuthManager (not orchestrated).                                                                                                                                                                                                                          |
-Routing for `fallback` requires at least one runnable backend (providers in `AvailableProviders` where needed, resolvable antigravity model, or `tavily_api_keys`).
+Routing for `fallback` requires at least one runnable backend (providers in `AvailableProviders` where needed or `tavily_api_keys`).
 
 ### xAI web search notes (aligned with upstream docs)
 
@@ -32,7 +32,7 @@ Plugin config lives under `plugins.configs.claude-web-search-router` (key must m
 
 ### Recommended: fallback chain (default)
 
-Tries **antigravity → codex → xai → tavily**; configure `tavily_api_keys` so the last step can succeed when built-in providers are missing or unavailable.
+Tries **codex → xai → tavily**; configure `tavily_api_keys` so the last step can succeed when built-in providers are missing or unavailable.
 
 ```yaml
 plugins:
@@ -43,7 +43,6 @@ plugins:
       enabled: true
       priority: 20
       route: fallback
-      antigravity_model: "" # empty: registry lookup, then first supports_web_search
       codex_model: "gpt-5.4-mini"
       xai_model: "grok-4.3"
       tavily_api_keys:
@@ -69,19 +68,6 @@ plugins:
 ```
 
 ### Single backend (no fallback)
-
-**Antigravity only:**
-
-```yaml
-plugins:
-  configs:
-    claude-web-search-router:
-      enabled: true
-      priority: 20
-      route: antigravity_google
-      antigravity_model: "gemini-3.1-flash-lite"
-      require_web_search_only: true
-```
 
 **Codex only:**
 
@@ -158,8 +144,7 @@ plugins:
 | ----- | ----------- |
 | `enabled` | `false` → `Handled: false` for all web_search matches |
 | `priority` | Host plugin order for ModelRouter (higher runs earlier; see main repo plugins docs) |
-| `route` | `fallback` (default), `antigravity_google`, `codex_web_search`, `xai_web_search`, `tavily`, `default_provider` |
-| `antigravity_model` | Antigravity execution model; never the client Claude model name |
+| `route` | `fallback` (default), `codex_web_search`, `xai_web_search`, `tavily`, `default_provider` |
 | `codex_model` | Codex model; empty → `gpt-5.4-mini` |
 | `xai_model` | xAI model; empty → `grok-4.3` |
 | `default_provider` / `default_provider_model` | Used when `route=default_provider` |

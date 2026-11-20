@@ -266,23 +266,6 @@ func AntigravityDefaultCallbackURI() string {
 	return fmt.Sprintf("http://localhost:%d/oauth-callback", AntigravityDefaultCallbackPort)
 }
 
-// AntigravityUserAgent returns the canonical User-Agent string used by the Antigravity Hub family.
-func AntigravityUserAgent() string {
-	return misc.AntigravityUserAgent()
-}
-
-// StartAntigravityVersionUpdater starts background refresh for the Antigravity Hub version.
-// Pass a process-lifetime ctx; it runs only once and is not auto-started by SDK packages.
-func StartAntigravityVersionUpdater(ctx context.Context) {
-	misc.StartAntigravityVersionUpdater(ctx)
-}
-
-// AntigravityRequestUserAgent returns the User-Agent for Antigravity runtime requests,
-// falling back to AntigravityUserAgent when userAgent is empty.
-func AntigravityRequestUserAgent(userAgent string) string {
-	return misc.AntigravityRequestUserAgent(userAgent)
-}
-
 // BuildAntigravityAuthURL generates the OAuth authorization URL for Antigravity.
 // If redirectURI is empty, the default loopback callback URI is used.
 func BuildAntigravityAuthURL(state, redirectURI string) string {
