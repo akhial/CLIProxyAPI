@@ -1279,14 +1279,18 @@ oauth:
     # Antigravity provider behavior.
     # antigravity:
       # Antigravity accepts Gemini models through the native Gemini API used by agy ACP.
-      # This uses the caller's User-Agent and X-Goog-Api-Client, skips credential header
-      # overrides for these calls, and still applies requests.payload rules.
+      # The gateway emits the official Antigravity CLI/ACP User-Agent (omitting
+      # X-Goog-Api-Client), skips credential header overrides, and still applies
+      # requests.payload rules last.
       # In stock agy ACP 1.5.12 the main system instruction includes the conversation
-      # UUID and its artifact directory. When both agree, the gateway derives a session
-      # ID and a cascade_id correlation label scoped to the worker key and selected
-      # Google credential. An existing label is preserved. Titles use the fallback.
+      # UUID and its artifact directory. When both agree, the gateway correlates turns
+      # with a stable session ID, sets cascade_id and root_cascade_id to match the
+      # prompt UUID, populates trajectory/step/model labels and OAuth-style agent
+      # request IDs, and classifies ACP title requests as checkpoints sharing their
+      # conversation's session ID. Existing labels are preserved.
       # For these ACP calls, a single function-only group expands to one tool per
-      # declaration. Tool names, schemas, order and argument constraints are preserved.
+      # declaration, and parametersJsonSchema declarations are converted to Cloud Code's
+      # typed parameters schema format.
       # To use this from T3 Code, select Gemini API key in the Antigravity provider,
       # enter the worker's proxy key and set GOOGLE_GEMINI_BASE_URL in that provider's
       # environment to the gateway origin (e.g. http://127.0.0.1:8317 on the gateway host).

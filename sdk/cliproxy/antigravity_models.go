@@ -84,12 +84,18 @@ var (
 type antigravityModelCapabilityHints struct {
 	WebSearchModelIDs map[string]struct{}
 	// Nil means unknown; an empty non-nil set is an authoritative empty catalog.
-	ModelIDs map[string]struct{}
-	revision uint64
+	ModelIDs   map[string]struct{}
+	ModelEnums map[string]string
+	revision   uint64
 }
 
 func (h antigravityModelCapabilityHints) clone() antigravityModelCapabilityHints {
-	return antigravityModelCapabilityHints{WebSearchModelIDs: maps.Clone(h.WebSearchModelIDs), ModelIDs: maps.Clone(h.ModelIDs), revision: h.revision}
+	return antigravityModelCapabilityHints{
+		WebSearchModelIDs: maps.Clone(h.WebSearchModelIDs),
+		ModelIDs:          maps.Clone(h.ModelIDs),
+		ModelEnums:        maps.Clone(h.ModelEnums),
+		revision:          h.revision,
+	}
 }
 
 // antigravityCapabilityKey isolates catalogs by account, project, route. Token rotation alone does not invalidate a successful catalog.
@@ -218,6 +224,7 @@ func buildPersistedAntigravityCapabilityHintsValue(project, endpoint string, hin
 	return sdkauth.BuildPersistedAntigravityCapabilityHints(project, endpoint, sdkauth.AntigravityModelCapabilityHints{
 		ModelIDs:          hints.ModelIDs,
 		WebSearchModelIDs: hints.WebSearchModelIDs,
+		ModelEnums:        hints.ModelEnums,
 	})
 }
 
@@ -229,6 +236,7 @@ func parsePersistedAntigravityCapabilityHints(metadata map[string]any, expectedP
 	return antigravityModelCapabilityHints{
 		ModelIDs:          hints.ModelIDs,
 		WebSearchModelIDs: hints.WebSearchModelIDs,
+		ModelEnums:        hints.ModelEnums,
 	}, true
 }
 
@@ -367,6 +375,7 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
 	return antigravityModelCapabilityHints{
 		ModelIDs:          hints.ModelIDs,
 		WebSearchModelIDs: hints.WebSearchModelIDs,
+		ModelEnums:        hints.ModelEnums,
 	}, status
 }
 

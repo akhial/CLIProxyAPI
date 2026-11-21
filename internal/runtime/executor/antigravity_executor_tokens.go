@@ -65,6 +65,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		requestURL.WriteString(url.QueryEscape(opts.Alt))
 	}
 
+	userAgent := helps.AntigravityRequestUserAgent(doc, opts)
 	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, to.String(), "request", baseline, req, opts))
 	helps.FinalizePayloadDoc(ctx, doc)
 	payload := doc.Bytes()
@@ -78,7 +79,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 	if host := resolveHost(base); host != "" {
 		httpReq.Host = host
 	}
-	setAntigravityRequestHeaders(httpReq, opts)
+	setAntigravityRequestHeaders(httpReq, userAgent)
 
 	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 		URL:       requestURL.String(),

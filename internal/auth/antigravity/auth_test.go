@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 )
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
@@ -122,8 +124,8 @@ func assertLoadCodeAssistHeaders(t *testing.T, req *http.Request) {
 		t.Fatalf("X-Goog-Api-Client = %q, want empty", got)
 	}
 	userAgent := req.Header.Get("User-Agent")
-	if userAgent != "CLIProxyAPI" {
-		t.Fatalf("User-Agent = %q", userAgent)
+	if userAgent != misc.AntigravityGatewayUserAgent || !strings.HasPrefix(userAgent, "antigravity/cli/") {
+		t.Fatalf("User-Agent = %q, want %q", userAgent, misc.AntigravityGatewayUserAgent)
 	}
 }
 
@@ -139,8 +141,8 @@ func assertOnboardUserHeaders(t *testing.T, req *http.Request) {
 		t.Fatalf("X-Goog-Api-Client = %q", got)
 	}
 	userAgent := req.Header.Get("User-Agent")
-	if userAgent != "CLIProxyAPI" {
-		t.Fatalf("User-Agent = %q", userAgent)
+	if userAgent != misc.AntigravityGatewayUserAgent || !strings.HasPrefix(userAgent, "antigravity/cli/") {
+		t.Fatalf("User-Agent = %q, want %q", userAgent, misc.AntigravityGatewayUserAgent)
 	}
 }
 

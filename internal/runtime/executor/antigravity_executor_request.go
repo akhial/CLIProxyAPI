@@ -34,8 +34,8 @@ func antigravityPayload(req cliproxyexecutor.Request, opts cliproxyexecutor.Opti
 	if err != nil {
 		return nil, nil, statusErr{code: http.StatusBadRequest, msg: err.Error()}
 	}
-	if err := helps.GroupAntigravityACPFunctions(doc); err != nil {
-		return nil, nil, fmt.Errorf("group ACP function declarations: %w", err)
+	if err := helps.NormalizeAntigravityACPTools(doc); err != nil {
+		return nil, nil, fmt.Errorf("normalize ACP tool declarations: %w", err)
 	}
 	return doc, doc.Bytes(), nil
 }
@@ -56,12 +56,10 @@ func (e *AntigravityExecutor) prepareGenerationDoc(ctx context.Context, doc *ojs
 	return nil
 }
 
-func setAntigravityRequestHeaders(r *http.Request, opts cliproxyexecutor.Options) {
-	// An empty User-Agent suppresses the Go transport default when the caller omitted it.
-	r.Header.Set("User-Agent", opts.Headers.Get("User-Agent"))
-	if value := opts.Headers.Get("X-Goog-Api-Client"); value != "" {
-		r.Header.Set("X-Goog-Api-Client", value)
-	}
+func setAntigravityRequestHeaders(r *http.Request, userAgent string) {
+	// Emulate the official Antigravity CLI/ACP client identity and omit X-Goog-Api-Client.
+	r.Header.Set("User-Agent", userAgent)
+	r.Header.Del("X-Goog-Api-Client")
 }
 
 func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, payload []byte, stream bool, alt, baseURL string, derivedSessionIDs ...string) (*http.Request, error) {
@@ -106,10 +104,12 @@ func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliprox
 	if errProject != nil {
 		return nil, nil, errProject
 	}
-	if errSession := helps.ApplyAntigravityACPSessionDoc(doc, opts, auth, projectID); errSession != nil {
+	acpInfo, errSession := helps.ApplyAntigravityACPSessionDoc(doc, opts, auth, projectID, modelName)
+	if errSession != nil {
 		return nil, nil, errSession
 	}
-	setAntigravityEnvelopeDoc(doc, modelName, projectID, derivedSessionIDs...)
+	userAgent := helps.AntigravityRequestUserAgent(doc, opts)
+	setAntigravityEnvelopeDoc(doc, modelName, projectID, acpInfo, derivedSessionIDs...)
 	helps.FinalizePayloadDoc(ctx, doc)
 	finalPayload := doc.Bytes()
 	var (
@@ -129,7 +129,7 @@ func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliprox
 	if host := resolveHost(base); host != "" {
 		httpReq.Host = host
 	}
-	setAntigravityRequestHeaders(httpReq, opts)
+	setAntigravityRequestHeaders(httpReq, userAgent)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -192,7 +192,7 @@ func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 	return ""
 }
 
-func setAntigravityEnvelopeDoc(doc *ojson.Doc, modelName string, projectID string, derivedSessionIDs ...string) {
+func setAntigravityEnvelopeDoc(doc *ojson.Doc, modelName string, projectID string, acpInfo helps.AntigravityACPRequestInfo, derivedSessionIDs ...string) {
 	if doc == nil {
 		return
 	}
@@ -204,6 +204,8 @@ func setAntigravityEnvelopeDoc(doc *ojson.Doc, modelName string, projectID strin
 	if reqType == "" {
 		if isImageModel {
 			reqType = "image_gen"
+		} else if acpInfo.RequestType != "" {
+			reqType = acpInfo.RequestType
 		} else {
 			reqType = "agent"
 		}
@@ -219,7 +221,15 @@ func setAntigravityEnvelopeDoc(doc *ojson.Doc, modelName string, projectID strin
 	if isImageModel {
 		_ = doc.Set("requestId", generateImageGenRequestID())
 	} else {
-		_ = doc.Set("requestId", generateRequestID())
+		requestID := acpInfo.RequestID
+		if requestID == "" {
+			if reqType == "checkpoint" {
+				requestID = "checkpoint/" + uuid.NewString()
+			} else {
+				requestID = generateRequestID()
+			}
+		}
+		_ = doc.Set("requestId", requestID)
 		sessionID := strings.TrimSpace(doc.Get("request.sessionId").String())
 		if sessionID == "" && len(derivedSessionIDs) > 0 {
 			sessionID = strings.TrimSpace(derivedSessionIDs[0])
