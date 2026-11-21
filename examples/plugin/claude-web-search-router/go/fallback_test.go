@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/MoeForge/moego/json"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -31,36 +30,7 @@ func decodeModelRouteResponse(t *testing.T, raw []byte) pluginapi.ModelRouteResp
 	return resp
 }
 
-func TestRouteWithFallbackAntigravityFirst(t *testing.T) {
-	reg := registry.GetGlobalRegistry()
-	const clientID = "test-fallback-antigravity"
-	reg.RegisterClient(clientID, "antigravity", []*registry.ModelInfo{
-		{ID: "gem-fallback-test", SupportsWebSearch: true},
-	})
-	t.Cleanup(func() { reg.UnregisterClient(clientID) })
-
-	currentConfig.Store(pluginConfig{
-		Enabled: true,
-		Route:   string(backendFallback),
-	})
-	raw, err := routeModel(mustJSON(t, rpcModelRouteRequest{
-		ModelRouteRequest: pluginapi.ModelRouteRequest{
-			SourceFormat:       "claude",
-			Body:               claudeWebSearchRouteBody(t),
-			RequestedModel:     "claude-sonnet-4-6",
-			AvailableProviders: []string{"antigravity", "codex", "xai"},
-		},
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp := decodeModelRouteResponse(t, raw)
-	if !resp.Handled || resp.TargetKind != pluginapi.ModelRouteTargetSelf {
-		t.Fatalf("resp = %#v", resp)
-	}
-}
-
-func TestRouteWithFallbackSkipsAntigravityToCodex(t *testing.T) {
+func TestRouteWithFallbackToCodex(t *testing.T) {
 	currentConfig.Store(pluginConfig{
 		Enabled: true,
 		Route:   string(backendFallback),

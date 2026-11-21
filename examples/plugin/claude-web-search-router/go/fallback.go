@@ -9,7 +9,6 @@ import (
 // defaultWebSearchFallbackChain is the ordered backend try list when route=fallback.
 func defaultWebSearchFallbackChain() []routeBackend {
 	return []routeBackend{
-		backendAntigravityGoogle,
 		backendCodexWebSearch,
 		backendXAIWebSearch,
 		backendTavily,
@@ -33,21 +32,6 @@ func tryRouteBackend(backend routeBackend, cfg pluginConfig, req pluginapi.Model
 			Handled:    true,
 			TargetKind: pluginapi.ModelRouteTargetSelf,
 			Reason:     "claude_code_web_search_tavily",
-		}, true
-	case backendAntigravityGoogle:
-		if !hasProvider(req.AvailableProviders, "antigravity") {
-			return pluginapi.ModelRouteResponse{Handled: false, Reason: "antigravity_unavailable"}, false
-		}
-		targetModel := resolveAntigravityWebSearchTargetModel(cfg.AntigravityModel, req.RequestedModel)
-		if targetModel == "" {
-			return pluginapi.ModelRouteResponse{Handled: false, Reason: "antigravity_web_search_model_unresolved"}, false
-		}
-		return pluginapi.ModelRouteResponse{
-			Handled:     true,
-			TargetKind:  pluginapi.ModelRouteTargetProvider,
-			Target:      "antigravity",
-			TargetModel: targetModel,
-			Reason:      "claude_code_web_search_antigravity_google",
 		}, true
 	case backendCodexWebSearch:
 		if !hasProvider(req.AvailableProviders, "codex") {

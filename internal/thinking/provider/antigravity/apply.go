@@ -2,8 +2,6 @@
 package antigravity
 
 import (
-	"strings"
-
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -48,7 +46,7 @@ func (a *Applier) ApplyDoc(doc *ojson.Doc, config thinking.ThinkingConfig, model
 		return nil
 	}
 	if thinking.IsUserDefinedModel(modelInfo) {
-		return a.applyCompatibleDoc(doc, config, modelInfo)
+		return a.applyCompatibleDoc(doc, config)
 	}
 	if modelInfo.Thinking == nil {
 		return nil
@@ -57,32 +55,27 @@ func (a *Applier) ApplyDoc(doc *ojson.Doc, config thinking.ThinkingConfig, model
 		return nil
 	}
 
-	isClaude := strings.Contains(strings.ToLower(modelInfo.ID), "claude")
 	if config.Mode == thinking.ModeAuto || config.Mode == thinking.ModeBudget {
-		return a.applyBudgetFormatDoc(doc, config, modelInfo, isClaude)
+		return a.applyBudgetFormatDoc(doc, config)
 	}
 
 	if len(modelInfo.Thinking.Levels) > 0 {
 		return a.applyLevelFormatDoc(doc, config)
 	}
-	return a.applyBudgetFormatDoc(doc, config, modelInfo, isClaude)
+	return a.applyBudgetFormatDoc(doc, config)
 }
 
-func (a *Applier) applyCompatibleDoc(doc *ojson.Doc, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) error {
+func (a *Applier) applyCompatibleDoc(doc *ojson.Doc, config thinking.ThinkingConfig) error {
 	if config.Mode != thinking.ModeBudget && config.Mode != thinking.ModeLevel && config.Mode != thinking.ModeNone && config.Mode != thinking.ModeAuto {
 		return nil
 	}
-	isClaude := false
-	if modelInfo != nil {
-		isClaude = strings.Contains(strings.ToLower(modelInfo.ID), "claude")
-	}
 	if config.Mode == thinking.ModeAuto {
-		return a.applyBudgetFormatDoc(doc, config, modelInfo, isClaude)
+		return a.applyBudgetFormatDoc(doc, config)
 	}
 	if config.Mode == thinking.ModeLevel || (config.Mode == thinking.ModeNone && config.Level != "") {
 		return a.applyLevelFormatDoc(doc, config)
 	}
-	return a.applyBudgetFormatDoc(doc, config, modelInfo, isClaude)
+	return a.applyBudgetFormatDoc(doc, config)
 }
 
 func (a *Applier) applyLevelFormatDoc(doc *ojson.Doc, config thinking.ThinkingConfig) error {
@@ -118,7 +111,7 @@ func (a *Applier) applyLevelFormatDoc(doc *ojson.Doc, config thinking.ThinkingCo
 	return nil
 }
 
-func (a *Applier) applyBudgetFormatDoc(doc *ojson.Doc, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo, isClaude bool) error {
+func (a *Applier) applyBudgetFormatDoc(doc *ojson.Doc, config thinking.ThinkingConfig) error {
 	includeThoughts, hasIncludeThoughts := extractAntigravityIncludeThoughtsDoc(doc)
 	_ = util.DeleteJSONDocIfExists(doc, "request.generationConfig.thinkingConfig.thinkingLevel")
 	_ = util.DeleteJSONDocIfExists(doc, "request.generationConfig.thinkingConfig.thinking_level")
@@ -127,15 +120,6 @@ func (a *Applier) applyBudgetFormatDoc(doc *ojson.Doc, config thinking.ThinkingC
 	_ = util.DeleteJSONDocIfExists(doc, "request.generationConfig.thinkingConfig.include_thoughts")
 
 	budget := config.Budget
-	if isClaude && modelInfo != nil {
-		budget = a.normalizeClaudeBudgetDoc(budget, doc, modelInfo)
-		if budget == -2 {
-			if hasIncludeThoughts {
-				_ = doc.Set("request.generationConfig.thinkingConfig.includeThoughts", includeThoughts)
-			}
-			return nil
-		}
-	}
 
 	_ = doc.Set("request.generationConfig.thinkingConfig.thinkingBudget", budget)
 	if hasIncludeThoughts {
@@ -157,40 +141,4 @@ func extractAntigravityIncludeThoughtsDoc(doc *ojson.Doc) (bool, bool) {
 		}
 	}
 	return false, false
-}
-
-func (a *Applier) normalizeClaudeBudgetDoc(budget int, doc *ojson.Doc, modelInfo *registry.ModelInfo) int {
-	if modelInfo == nil {
-		return budget
-	}
-
-	effectiveMax, setDefaultMax := a.effectiveMaxTokensDoc(doc, modelInfo)
-	if effectiveMax > 0 && budget >= effectiveMax {
-		budget = effectiveMax - 1
-	}
-
-	minBudget := 0
-	if modelInfo.Thinking != nil {
-		minBudget = modelInfo.Thinking.Min
-	}
-	if minBudget > 0 && budget >= 0 && budget < minBudget {
-		_ = util.DeleteJSONDocIfExists(doc, "request.generationConfig.thinkingConfig")
-		return -2
-	}
-
-	if setDefaultMax && effectiveMax > 0 {
-		_ = doc.Set("request.generationConfig.maxOutputTokens", effectiveMax)
-	}
-
-	return budget
-}
-
-func (a *Applier) effectiveMaxTokensDoc(doc *ojson.Doc, modelInfo *registry.ModelInfo) (max int, fromModel bool) {
-	if maxTok := doc.Get("request.generationConfig.maxOutputTokens"); maxTok.Exists() && maxTok.Int() > 0 {
-		return int(maxTok.Int()), false
-	}
-	if modelInfo != nil && modelInfo.MaxCompletionTokens > 0 {
-		return modelInfo.MaxCompletionTokens, true
-	}
-	return 0, false
 }

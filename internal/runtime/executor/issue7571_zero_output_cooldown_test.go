@@ -40,7 +40,7 @@ func assertZeroOutputTransientTransportError(t *testing.T, label string, err err
 }
 
 func TestIssue7571_GeminiFamilyZeroOutputCarriesTransientTransportAndSkipsCooldown(t *testing.T) {
-	t.Run("antigravity_nonstream_stream_claude_sigonly_postthought", func(t *testing.T) {
+	t.Run("antigravity_nonstream_stream_sigonly_postthought", func(t *testing.T) {
 		malformedBody := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"thoughtSignature":"sig-only","text":""}]},"finishReason":"MALFORMED_FUNCTION_CALL","finishMessage":"Malformed function call: bash"}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":0,"thoughtsTokenCount":10,"totalTokenCount":130},"modelVersion":"gemini-4-hydrogen"}}`
 		sigOnlyBody := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"thoughtSignature":"sig-only","text":""}]}}],"usageMetadata":{"promptTokenCount":120,"totalTokenCount":120},"modelVersion":"gemini-4-hydrogen"}}`
 		postThoughtChunk := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"thinking"}]}}],"modelVersion":"gemini-4-hydrogen"}}`
@@ -86,15 +86,15 @@ func TestIssue7571_GeminiFamilyZeroOutputCarriesTransientTransportAndSkipsCooldo
 		})
 		assertZeroOutputTransientTransportError(t, "antigravity.Execute", errExec)
 
-		// 2. Claude-family non-stream executeClaudeNonStream path (gemini-3-pro + FormatClaude).
-		_, errClaudeExec := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		// 2. Unary generation aggregated from a Gemini stream.
+		_, errAggregated := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
 			Model:   "gemini-3-pro",
-			Payload: issue7513RequestPayload(sdktranslator.FormatClaude, "gemini-3-pro", false),
+			Payload: issue7513RequestPayload(sdktranslator.FormatGemini, "gemini-3-pro", false),
 		}, cliproxyexecutor.Options{
-			SourceFormat:   sdktranslator.FormatClaude,
-			ResponseFormat: sdktranslator.FormatClaude,
+			SourceFormat:   sdktranslator.FormatGemini,
+			ResponseFormat: sdktranslator.FormatGemini,
 		})
-		assertZeroOutputTransientTransportError(t, "antigravity.executeClaudeNonStream", errClaudeExec)
+		assertZeroOutputTransientTransportError(t, "antigravity.executeAggregatedStream", errAggregated)
 
 		// 3. Stream MALFORMED_FUNCTION_CALL, signature-only EOF, and post-thinking MALFORMED_FUNCTION_CALL.
 		for _, streamCase := range []struct {
@@ -103,8 +103,8 @@ func TestIssue7571_GeminiFamilyZeroOutputCarriesTransientTransportAndSkipsCooldo
 			format sdktranslator.Format
 		}{
 			{name: "stream_malformed", mode: "malformed", format: sdktranslator.FormatGemini},
-			{name: "stream_sigonly_eof", mode: "sigonly", format: sdktranslator.FormatOpenAI},
-			{name: "stream_post_thought_claude", mode: "post_thought", format: sdktranslator.FormatClaude},
+			{name: "stream_sigonly_eof", mode: "sigonly", format: sdktranslator.FormatGemini},
+			{name: "stream_post_thought", mode: "post_thought", format: sdktranslator.FormatGemini},
 		} {
 			mode = streamCase.mode
 			streamRes, errStream := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
@@ -346,81 +346,6 @@ func TestIssue7571_GeminiFamilyZeroOutputCarriesTransientTransportAndSkipsCooldo
 
 	t.Run("grounding_chunks_only_claude_translated_malformed", func(t *testing.T) {
 		geminiGroundingMalformed := `{"candidates":[{"content":{"role":"model","parts":[]},"groundingMetadata":{"groundingChunks":[{"web":{"uri":"https://example.com","title":"Example"}}]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":50,"totalTokenCount":50},"modelVersion":"gemini-4-argon"}`
-		antigravityGroundingMalformed := `{"response":{"candidates":[{"content":{"role":"model","parts":[]},"groundingMetadata":{"groundingChunks":[{"web":{"uri":"https://example.com","title":"Example"}}]},"finishReason":"MALFORMED_FUNCTION_CALL"}],"usageMetadata":{"promptTokenCount":50,"totalTokenCount":50},"modelVersion":"gemini-4-hydrogen"}}`
-
-		t.Run("antigravity", func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.Contains(r.URL.Path, "streamGenerateContent") {
-					w.Header().Set("Content-Type", "text/event-stream")
-					_, _ = io.WriteString(w, "data: "+antigravityGroundingMalformed+"\n\n")
-					return
-				}
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = io.WriteString(w, antigravityGroundingMalformed)
-			}))
-			defer server.Close()
-
-			exec := NewAntigravityExecutor(&config.Config{})
-			manager := cliproxyauth.NewManager(nil, &cliproxyauth.RoundRobinSelector{}, nil)
-			manager.RegisterExecutor(exec)
-
-			model := "gemini-4-hydrogen"
-			auth := &cliproxyauth.Auth{
-				ID:       "ag-issue7571-grounding",
-				Provider: "antigravity",
-				Status:   cliproxyauth.StatusActive,
-				Metadata: map[string]any{
-					"access_token": "token-ag",
-					"expired":      time.Now().Add(24 * time.Hour).Format(time.RFC3339),
-					"project_id":   "project-ag",
-				},
-				Attributes: map[string]string{"base_url": server.URL},
-			}
-			if _, errReg := manager.Register(context.Background(), auth); errReg != nil {
-				t.Fatalf("Register() error = %v", errReg)
-			}
-			registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}, {ID: "gemini-3-pro"}})
-			t.Cleanup(func() {
-				registry.GetGlobalRegistry().UnregisterClient(auth.ID)
-			})
-
-			// Non-stream via manager (standard + Claude-family executeClaudeNonStream).
-			for _, m := range []string{model, "gemini-3-pro"} {
-				_, errExec := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{
-					Model:   m,
-					Payload: issue7513RequestPayload(sdktranslator.FormatClaude, m, false),
-				}, cliproxyexecutor.Options{
-					SourceFormat:   sdktranslator.FormatClaude,
-					ResponseFormat: sdktranslator.FormatClaude,
-				})
-				assertZeroOutputTransientTransportError(t, "antigravity.grounding.Execute("+m+")", errExec)
-			}
-
-			// Stream via manager.
-			streamRes, errStream := manager.ExecuteStream(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{
-				Model:   model,
-				Payload: issue7513RequestPayload(sdktranslator.FormatClaude, model, true),
-			}, cliproxyexecutor.Options{
-				SourceFormat:   sdktranslator.FormatClaude,
-				ResponseFormat: sdktranslator.FormatClaude,
-				Stream:         true,
-			})
-			if errStream != nil {
-				t.Fatalf("antigravity.grounding.ExecuteStream() error = %v", errStream)
-			}
-			var chunkErr error
-			for chunk := range streamRes.Chunks {
-				if chunk.Err != nil {
-					chunkErr = chunk.Err
-				}
-			}
-			assertZeroOutputTransientTransportError(t, "antigravity.grounding.ExecuteStream", chunkErr)
-
-			updated, ok := manager.GetByID(auth.ID)
-			if !ok || updated == nil || updated.Unavailable || !updated.NextRetryAfter.IsZero() {
-				t.Fatalf("groundingChunks-only malformed cooled antigravity auth: %+v", updated)
-			}
-		})
 
 		for _, provider := range []string{"gemini", "vertex_api_key", "vertex_service_account"} {
 			t.Run(provider, func(t *testing.T) {

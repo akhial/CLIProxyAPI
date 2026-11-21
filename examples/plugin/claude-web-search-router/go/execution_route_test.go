@@ -16,7 +16,7 @@ func TestBuildExecutionPlansForExecuteRespectsRouteTavily(t *testing.T) {
 	req := pluginapi.ModelRouteRequest{
 		SourceFormat:       "claude",
 		RequestedModel:     "claude-sonnet-4-6",
-		AvailableProviders: []string{"antigravity", "codex", "xai"},
+		AvailableProviders: []string{"codex", "xai"},
 	}
 	plans := buildExecutionPlansForExecute(cfg, req)
 	if len(plans) != 1 {

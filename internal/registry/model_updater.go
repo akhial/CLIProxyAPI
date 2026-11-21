@@ -201,6 +201,7 @@ func loadModelsFromBytes(data []byte, source string) error {
 		return fmt.Errorf("%s: validate models catalog: %w", source, err)
 	}
 
+	parsed.Antigravity = NativeAntigravityModels(parsed.Antigravity)
 	modelsCatalogStore.mu.Lock()
 	modelsCatalogStore.data = &parsed
 	modelsCatalogStore.mu.Unlock()

@@ -46,12 +46,12 @@ func TestRequestPairWithEmptyPluginHostSanitizesSignaturesOnce(t *testing.T) {
 				if route == "envelope" {
 					req := sdktranslator.RequestEnvelope{Format: sdktranslator.FormatOpenAIResponse, Model: "gemini-3.6-flash-high", Stream: stream}
 					var errTranslate error
-					base, work, errTranslate = helps.TranslateRequestEnvelopePairWithCodexMultiAgentV2(t.Context(), nil, &config.Config{}, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatAntigravity, req, payload, payload)
+					base, work, errTranslate = helps.TranslateRequestEnvelopePairWithCodexMultiAgentV2(t.Context(), nil, &config.Config{}, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatGemini, req, payload, payload)
 					if errTranslate != nil {
 						t.Fatalf("translate request pair: %v", errTranslate)
 					}
 				} else {
-					base, work = helps.TranslateRequestPairWithAPIKeyModelCompatibility(t.Context(), nil, &config.Config{}, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatAntigravity, "gemini-3.6-flash-high", payload, payload, stream, route == "api-key-compat")
+					base, work = helps.TranslateRequestPairWithAPIKeyModelCompatibility(t.Context(), nil, &config.Config{}, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatGemini, "gemini-3.6-flash-high", payload, payload, stream, route == "api-key-compat")
 				}
 				const message = "gemini request: sanitized 9 thoughtSignatures"
 				if count := strings.Count(logs.String(), message); count != 1 {
@@ -60,7 +60,7 @@ func TestRequestPairWithEmptyPluginHostSanitizesSignaturesOnce(t *testing.T) {
 				if !bytes.Equal(base, work) {
 					t.Fatal("same input produced different translations")
 				}
-				parts := ojson.GetBytes(work, "request.contents.0.parts").Array()
+				parts := ojson.GetBytes(work, "contents.0.parts").Array()
 				if len(parts) != 10 || parts[0].Get("thoughtSignature").String() != "skip_thought_signature_validator" {
 					t.Fatalf("unexpected parallel tool call layout: %s", work)
 				}

@@ -101,20 +101,6 @@ func HasResponsesCompactionTrigger(payload []byte) bool {
 	return false
 }
 
-// HasResponsesCompactionItem checks whether input contains a compaction item.
-func HasResponsesCompactionItem(payload []byte) bool {
-	input := ojson.GetBytesNoCopy(payload, "input")
-	if !input.IsArray() {
-		return false
-	}
-	for _, item := range input.Array() {
-		if item.Get("type").String() == "compaction" {
-			return true
-		}
-	}
-	return false
-}
-
 // HasResponsesCompactionTriggerRequest reports whether req.Payload or opts.OriginalRequest contains a compaction_trigger item.
 func HasResponsesCompactionTriggerRequest(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) bool {
 	return HasResponsesCompactionTrigger(req.Payload) || HasResponsesCompactionTrigger(opts.OriginalRequest)

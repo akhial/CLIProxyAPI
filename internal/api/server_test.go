@@ -2869,7 +2869,7 @@ func TestUpdateClientsContext_AntigravityConnectionPoolPurgesTransports(t *testi
 
 	// Pre-populate the cache before reload
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"totalTokens":1}`))
 	}))
 	defer srv.Close()
 
@@ -2884,8 +2884,9 @@ func TestUpdateClientsContext_AntigravityConnectionPoolPurgesTransports(t *testi
 		},
 	}
 	exec := executor.NewAntigravityExecutor(&cfg1)
-	req := httptest.NewRequest(http.MethodGet, srv.URL, nil)
-	_, _ = exec.HttpRequest(context.Background(), testAuth, req)
+	if _, err := exec.CountTokens(t.Context(), testAuth, coreexecutor.Request{Model: "gemini-test", Payload: []byte(`{"contents":[]}`)}, coreexecutor.Options{SourceFormat: "gemini"}); err != nil {
+		t.Fatal(err)
+	}
 
 	if executor.AntigravityTransportsLen() == 0 {
 		t.Fatal("expected Antigravity transports to be cached before hot reload")

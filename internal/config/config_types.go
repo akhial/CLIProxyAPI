@@ -258,15 +258,6 @@ type ProxyConnectionPoolConfig struct {
 
 // AntigravityConfig configures provider-wide Antigravity request behavior.
 type AntigravityConfig struct {
-	// SensitiveWords is a list of words to obfuscate with invisible combining grapheme joiners in system instructions.
-	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
-
-	// SensitiveWordsReplace maps sensitive words or phrases to literal replacements in system instructions.
-	SensitiveWordsReplace map[string]string `yaml:"sensitive-words-replace,omitempty" json:"sensitive-words-replace,omitempty"`
-
-	// SensitivePatternsReplace defines ordered Go RE2 regex replacement rules for system instructions.
-	SensitivePatternsReplace []SensitivePatternRule `yaml:"sensitive-patterns-replace,omitempty" json:"sensitive-patterns-replace,omitempty"`
-
 	// ConnectionPool configures upstream HTTP connection pooling behavior for Antigravity.
 	ConnectionPool AntigravityConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
 
@@ -555,11 +546,6 @@ type QuotaExceeded struct {
 
 	// SwitchPreviewModel indicates whether to automatically switch to a preview model when a quota is exceeded.
 	SwitchPreviewModel bool `yaml:"switch-preview-model" json:"switch-preview-model"`
-
-	// AntigravityCredits enables credits-based last-resort fallback for Claude models.
-	// When all free-tier auths are exhausted (429/503), the conductor retries with
-	// an auth that has available Google One AI credits.
-	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
 }
 
 // RoutingConfig configures how credentials are selected for requests.

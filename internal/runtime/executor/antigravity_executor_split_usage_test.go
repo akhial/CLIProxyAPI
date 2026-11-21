@@ -72,10 +72,10 @@ func TestAntigravityStreamFinalizesSplitTerminalUsageOnce(t *testing.T) {
 		Attributes: map[string]string{"base_url": server.URL},
 	}, cliproxyexecutor.Request{
 		Model:   "gemini-3.7-flash",
-		Payload: []byte(`{"model":"gemini-3.7-flash","messages":[{"role":"user","content":"hello"}],"stream":true}`),
+		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`),
 	}, cliproxyexecutor.Options{
-		SourceFormat:   sdktranslator.FormatOpenAI,
-		ResponseFormat: sdktranslator.FormatOpenAI,
+		SourceFormat:   sdktranslator.FormatGemini,
+		ResponseFormat: sdktranslator.FormatGemini,
 		Stream:         true,
 	})
 	if errExecute != nil {
@@ -90,11 +90,11 @@ func TestAntigravityStreamFinalizesSplitTerminalUsageOnce(t *testing.T) {
 		if chunk.Err != nil {
 			t.Fatalf("unexpected stream error: %v", chunk.Err)
 		}
-		if reason := ojson.GetBytes(chunk.Payload, "choices.0.finish_reason").String(); reason != "" {
+		if reason := ojson.GetBytes(chunk.Payload, "candidates.0.finishReason").String(); reason != "" {
 			if finishIndex >= 0 {
 				t.Fatalf("more than one terminal chunk: %s", chunk.Payload)
 			}
-			if reason != "stop" {
+			if reason != "STOP" {
 				t.Fatalf("finish_reason = %q, want stop", reason)
 			}
 			finishIndex = len(chunks)
@@ -105,14 +105,12 @@ func TestAntigravityStreamFinalizesSplitTerminalUsageOnce(t *testing.T) {
 	if finishIndex < 0 {
 		t.Fatal("expected a terminal chunk")
 	}
-	if finishIndex != len(chunks)-1 {
-		t.Fatalf("terminal chunk at index %d of %d chunks, want the last one", finishIndex, len(chunks))
-	}
-	terminal := chunks[finishIndex]
-	if got := ojson.GetBytes(terminal, "usage.total_tokens").Int(); got != 33 {
+	// Gemini can deliver usage in a separate event after the candidate finishes.
+	terminal := chunks[len(chunks)-1]
+	if got := ojson.GetBytes(terminal, "usageMetadata.totalTokenCount").Int(); got != 33 {
 		t.Fatalf("terminal total_tokens = %d, want 33", got)
 	}
-	if got := ojson.GetBytes(terminal, "usage.prompt_tokens").Int(); got != 11 {
+	if got := ojson.GetBytes(terminal, "usageMetadata.promptTokenCount").Int(); got != 11 {
 		t.Fatalf("terminal prompt_tokens = %d, want 11", got)
 	}
 }
@@ -150,10 +148,10 @@ func TestAntigravityStreamReportsSplitTerminalUsage(t *testing.T) {
 		Attributes: map[string]string{"base_url": server.URL},
 	}, cliproxyexecutor.Request{
 		Model:   "gemini-3.7-flash",
-		Payload: []byte(`{"model":"gemini-3.7-flash","messages":[{"role":"user","content":"hello"}],"stream":true}`),
+		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`),
 	}, cliproxyexecutor.Options{
-		SourceFormat:   sdktranslator.FormatOpenAI,
-		ResponseFormat: sdktranslator.FormatOpenAI,
+		SourceFormat:   sdktranslator.FormatGemini,
+		ResponseFormat: sdktranslator.FormatGemini,
 		Stream:         true,
 	})
 	if errExecute != nil {

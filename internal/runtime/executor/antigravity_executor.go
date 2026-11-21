@@ -12,29 +12,22 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
-	internalsignature "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
-	antigravityclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/antigravity/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 )
 
 const (
 	antigravityBaseURLDaily                = "https://daily-cloudcode-pa.googleapis.com"
-	antigravitySandboxBaseURLDaily         = "https://daily-cloudcode-pa.sandbox.googleapis.com"
-	antigravityBaseURLProd                 = "https://cloudcode-pa.googleapis.com"
 	antigravityCountTokensPath             = "/v1internal:countTokens"
 	antigravityStreamPath                  = "/v1internal:streamGenerateContent"
 	antigravityGeneratePath                = "/v1internal:generateContent"
@@ -42,19 +35,13 @@ const (
 	antigravityClientSecret                = "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"
 	antigravityAuthType                    = "antigravity"
 	antigravityRequestTokenSafetyWindow    = 5 * time.Minute
-	antigravityCreditsHintRefreshInterval  = cliproxyauth.AntigravityCreditsHintRefreshInterval
-	antigravityCreditsHintRefreshTimeout   = 5 * time.Second
 	antigravityShortQuotaCooldownThreshold = 5 * time.Minute
 	antigravityInstantRetryThreshold       = 3 * time.Second
-	// systemInstruction              = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
 )
 
 // AntigravityExecutor proxies requests to the antigravity upstream.
 type AntigravityExecutor struct {
-	cfg           *config.Config
-	matcherMu     sync.RWMutex
-	lastWordsKey  string
-	cachedMatcher *helps.SensitiveWordMatcher
+	cfg *config.Config
 }
 
 // NewAntigravityExecutor creates a new Antigravity executor instance.
@@ -66,54 +53,6 @@ type AntigravityExecutor struct {
 //   - *AntigravityExecutor: A new Antigravity executor instance
 func NewAntigravityExecutor(cfg *config.Config) *AntigravityExecutor {
 	return &AntigravityExecutor{cfg: cfg}
-}
-
-func (e *AntigravityExecutor) getSensitiveWordMatcher() *helps.SensitiveWordMatcher {
-	if e == nil || e.cfg == nil {
-		return nil
-	}
-	words := e.cfg.Antigravity.SensitiveWords
-	replacements := e.cfg.Antigravity.SensitiveWordsReplace
-	patterns := e.cfg.Antigravity.SensitivePatternsReplace
-	if len(words) == 0 && len(replacements) == 0 && len(patterns) == 0 {
-		return nil
-	}
-	key := helps.SensitiveWordConfigCacheKeyWithPatterns(words, replacements, patterns)
-	e.matcherMu.RLock()
-	if e.lastWordsKey == key {
-		m := e.cachedMatcher
-		e.matcherMu.RUnlock()
-		return m
-	}
-	e.matcherMu.RUnlock()
-
-	e.matcherMu.Lock()
-	defer e.matcherMu.Unlock()
-	if e.lastWordsKey == key {
-		return e.cachedMatcher
-	}
-	e.lastWordsKey = key
-	e.cachedMatcher = helps.BuildAntigravitySensitiveWordMatcherWithPatterns(words, replacements, patterns)
-	return e.cachedMatcher
-}
-
-func (e *AntigravityExecutor) obfuscateSensitiveWords(payload []byte) []byte {
-	matcher := e.getSensitiveWordMatcher()
-	if matcher == nil {
-		return payload
-	}
-	return helps.ObfuscateSensitiveWordsInSystemInstruction(payload, matcher)
-}
-
-func (e *AntigravityExecutor) obfuscateSensitiveWordsDoc(doc *ojson.Doc) bool {
-	if doc == nil {
-		return false
-	}
-	matcher := e.getSensitiveWordMatcher()
-	if matcher == nil {
-		return false
-	}
-	return helps.ObfuscateSensitiveWordsInSystemInstructionDoc(doc, matcher)
 }
 
 // Each Antigravity credential gets its own HTTP/1.1 connection pool. Sessions routed
@@ -533,79 +472,6 @@ func antigravityProxyURL(ctx context.Context, cfg *config.Config, auth *cliproxy
 	return ""
 }
 
-func sanitizeAntigravityGeminiRequestSignatures(modelName string, rawJSON []byte) []byte {
-	if !antigravityUsesReasoningReplayCache(modelName) {
-		return rawJSON
-	}
-	rawJSON = internalsignature.SanitizeNonVertexGeminiRequestThoughtSignatures(rawJSON, "request.contents")
-	return normalizeAntigravityGeminiFunctionResponseRoles(rawJSON)
-}
-
-func sanitizeAntigravityGeminiRequestSignaturesDoc(modelName string, doc *ojson.Doc) {
-	if doc == nil || !antigravityUsesReasoningReplayCache(modelName) {
-		return
-	}
-	internalsignature.SanitizeNonVertexGeminiRequestThoughtSignaturesDoc(doc, "request.contents")
-	normalizeAntigravityGeminiFunctionResponseRolesDoc(doc)
-}
-
-// ensureAntigravityGeminiLeadingUserContent prepends a synthetic empty user turn
-// after every contents rewrite, including reasoning replay. Claude targets are
-// left unchanged because the adapter rejects empty text parts.
-func ensureAntigravityGeminiLeadingUserContent(modelName string, payload []byte) []byte {
-	if strings.Contains(strings.ToLower(modelName), "claude") {
-		return payload
-	}
-	return helps.EnsureGeminiLeadingUserContent(payload, "request.contents")
-}
-
-func ensureAntigravityGeminiLeadingUserContentDoc(modelName string, doc *ojson.Doc) bool {
-	if doc == nil || strings.Contains(strings.ToLower(modelName), "claude") {
-		return false
-	}
-	return helps.EnsureGeminiLeadingUserContentDoc(doc, "request.contents")
-}
-
-// ensureAntigravityGeminiTrailingUserContent appends a synthetic empty user turn
-// if the final turn is a model turn. Claude targets are left unchanged because
-// the adapter rejects empty text parts.
-func ensureAntigravityGeminiTrailingUserContent(modelName string, payload []byte) []byte {
-	if strings.Contains(strings.ToLower(modelName), "claude") {
-		return payload
-	}
-	return helps.EnsureGeminiTrailingUserContent(payload, "request.contents")
-}
-
-func ensureAntigravityGeminiTrailingUserContentDoc(modelName string, doc *ojson.Doc) bool {
-	if doc == nil || strings.Contains(strings.ToLower(modelName), "claude") {
-		return false
-	}
-	return helps.EnsureGeminiTrailingUserContentDoc(doc, "request.contents")
-}
-
-// ensureAntigravityGeminiBoundaryUserContent normalizes both leading and trailing
-// turns for Gemini targets. A trailing reasoning-only model turn is dropped first
-// so the request does not rely only on a synthetic empty user turn (#6530).
-// Claude targets are left unchanged.
-func ensureAntigravityGeminiBoundaryUserContent(modelName string, payload []byte) []byte {
-	if strings.Contains(strings.ToLower(modelName), "claude") {
-		return payload
-	}
-	payload = helps.DropGeminiTrailingThoughtOnlyContent(payload, "request.contents")
-	return helps.EnsureGeminiBoundaryUserContent(payload, "request.contents")
-}
-
-func ensureAntigravityGeminiBoundaryUserContentDoc(modelName string, doc *ojson.Doc) bool {
-	if doc == nil || strings.Contains(strings.ToLower(modelName), "claude") {
-		return false
-	}
-	changed := helps.DropGeminiTrailingThoughtOnlyContentDoc(doc, "request.contents")
-	if helps.EnsureGeminiBoundaryUserContentDoc(doc, "request.contents") {
-		changed = true
-	}
-	return changed
-}
-
 type antigravityContentEdit struct {
 	index       int64
 	path        string
@@ -887,194 +753,10 @@ func repairAntigravityGeminiFunctionResponseNames(rawJSON []byte) []byte {
 	return applyAntigravityIndexedEdits(rawJSON, edits, validOffsets)
 }
 
-func validateAntigravityRequestSignatures(ctx context.Context, modelName string, from sdktranslator.Format, rawJSON []byte) ([]byte, error) {
-	if from.String() != "claude" {
-		return rawJSON, nil
-	}
-	before := countClaudeThinkingBlocks(rawJSON)
-	if antigravityUsesReasoningReplayCache(modelName) {
-		rawJSON = antigravityclaude.StripInvalidGeminiSignatureThinkingBlocks(rawJSON)
-		logAntigravitySignatureStrip(before, countClaudeThinkingBlocks(rawJSON), "provider_cleanup", "empty_or_non_gemini_signature")
-		return rawJSON, nil
-	}
-	// Claude models accept only Claude-format thinking signatures.
-	rawJSON = antigravityclaude.StripEmptySignatureThinkingBlocks(rawJSON)
-	logAntigravitySignatureStrip(before, countClaudeThinkingBlocks(rawJSON), "prefix_cleanup", "empty_or_non_claude_signature")
-	if cache.SignatureCacheEnabled() {
-		return rawJSON, nil
-	}
-	if !cache.SignatureBypassStrictMode() {
-		// Non-strict bypass: let the translator handle invalid signatures
-		// by dropping unsigned thinking blocks silently (no 400).
-		return rawJSON, nil
-	}
-	before = countClaudeThinkingBlocks(rawJSON)
-	rawJSON = antigravityclaude.StripInvalidBypassSignatureThinkingBlocks(rawJSON)
-	logAntigravitySignatureStrip(before, countClaudeThinkingBlocks(rawJSON), "strict_bypass", "invalid_antigravity_claude_signature")
-	return rawJSON, nil
-}
-
-func hasAntigravityClaudeTypedWebSearchTool(payload []byte) bool {
-	tools := util.GetGJSONBytesNoCopy(payload, "tools")
-	if !tools.IsArray() {
-		return false
-	}
-	for _, tool := range tools.Array() {
-		switch tool.Get("type").String() {
-		case "web_search_20250305", "web_search_20260209":
-			return true
-		}
-	}
-	return false
-}
-
-func hasAntigravityGoogleSearchTool(payload []byte) bool {
-	tools := util.GetGJSONBytesNoCopy(payload, "request.tools")
-	if !tools.IsArray() {
-		return false
-	}
-	for _, tool := range tools.Array() {
-		if tool.Get("googleSearch").Exists() {
-			return true
-		}
-	}
-	return false
-}
-
-func hasAntigravityResponsesWebSearchTool(rawJSON []byte) bool {
-	tools := util.GetGJSONBytesNoCopy(rawJSON, "tools")
-	if !tools.IsArray() {
-		return false
-	}
-	for _, tool := range tools.Array() {
-		switch tool.Get("type").String() {
-		case "web_search", "web_search_2025_08_26", "web_search_preview", "web_search_preview_2025_03_11":
-			return true
-		}
-	}
-	return false
-}
-
-func shouldResolveAntigravityWebSearchGroundingURLs(from sdktranslator.Format, originalRequestRawJSON, requestRawJSON []byte) bool {
-	if !hasAntigravityGoogleSearchTool(requestRawJSON) {
-		return false
-	}
-	switch from {
-	case sdktranslator.FormatClaude:
-		return hasAntigravityClaudeTypedWebSearchTool(originalRequestRawJSON)
-	case sdktranslator.FormatOpenAIResponse:
-		return hasAntigravityResponsesWebSearchTool(originalRequestRawJSON)
-	default:
-		return false
-	}
-}
-
-func (e *AntigravityExecutor) resolveWebSearchGroundingURLs(ctx context.Context, auth *cliproxyauth.Auth, from sdktranslator.Format, originalRequestRawJSON, requestRawJSON, responseRawJSON []byte) []byte {
-	if !shouldResolveAntigravityWebSearchGroundingURLs(from, originalRequestRawJSON, requestRawJSON) {
-		return responseRawJSON
-	}
-	return helps.ResolveAntigravityGroundingURLs(ctx, e.cfg, auth, responseRawJSON)
-}
-
-func countClaudeThinkingBlocks(rawJSON []byte) int {
-	messages := util.GetGJSONBytesNoCopy(rawJSON, "messages")
-	if !messages.IsArray() {
-		return 0
-	}
-
-	count := 0
-	messages.ForEach(func(_, message ojson.Result) bool {
-		content := message.Get("content")
-		if !content.IsArray() {
-			return true
-		}
-		content.ForEach(func(_, part ojson.Result) bool {
-			if part.Get("type").String() == "thinking" {
-				count++
-			}
-			return true
-		})
-		return true
-	})
-	return count
-}
-
-func logAntigravitySignatureStrip(before, after int, stage, reason string) {
-	removed := before - after
-	if removed <= 0 {
-		return
-	}
-	log.WithFields(log.Fields{
-		"component":       "signature_sanitizer",
-		"executor":        "antigravity",
-		"target_provider": "claude",
-		"action":          "drop_thinking_blocks",
-		"stage":           stage,
-		"reason":          reason,
-		"count":           removed,
-	}).Debug("antigravity executor: dropped Claude thinking blocks with invalid signatures")
-}
-
 // Identifier returns the executor identifier.
 func (e *AntigravityExecutor) Identifier() string { return antigravityAuthType }
 
-// PrepareRequest injects Antigravity credentials into the outgoing HTTP request.
-func (e *AntigravityExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth) error {
-	if req == nil {
-		return nil
-	}
-	token, _, errToken := e.ensureAccessToken(req.Context(), auth)
-	if errToken != nil {
-		return errToken
-	}
-	if strings.TrimSpace(token) == "" {
-		return statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	return nil
+// HttpRequest implements ProviderExecutor. Antigravity credentials support native Gemini operations only.
+func (e *AntigravityExecutor) HttpRequest(context.Context, *cliproxyauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, statusErr{code: http.StatusBadRequest, msg: "Antigravity requires a native Gemini operation"}
 }
-
-// HttpRequest injects Antigravity credentials into the request and executes it.
-// It uses a whitelist approach: all incoming headers are stripped and only
-// the minimum set required by the Antigravity protocol is explicitly set.
-func (e *AntigravityExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
-	if req == nil {
-		return nil, fmt.Errorf("antigravity executor: request is nil")
-	}
-	if ctx == nil {
-		ctx = req.Context()
-	}
-	httpReq := req.WithContext(ctx)
-
-	// Connection management is a Request field, not a header, so the header
-	// whitelist below cannot strip it. An inbound "Connection: close" makes Go's
-	// server set Request.Close, and WithContext copies that field verbatim, which
-	// would both leak the downstream header upstream and drain the shared pool.
-	httpReq.Close = false
-
-	// --- Whitelist: save only the headers we need from the original request ---
-	contentType := httpReq.Header.Get("Content-Type")
-
-	// Wipe ALL incoming headers
-	for k := range httpReq.Header {
-		delete(httpReq.Header, k)
-	}
-
-	// --- Set only the headers Antigravity actually sends ---
-	if contentType != "" {
-		httpReq.Header.Set("Content-Type", contentType)
-	}
-	// Content-Length is managed automatically by Go's http.Client from the Body
-	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
-
-	// Inject Authorization: Bearer <token>
-	if err := e.PrepareRequest(httpReq, auth); err != nil {
-		return nil, err
-	}
-
-	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
-	return helps.WithAntigravityHTTPClientTrace(httpClient, auth, "http_request").Do(httpReq)
-}
-
-// SupportsApplyPatch reports the actual executor contract, independent of its provider name.
-func (e *AntigravityExecutor) SupportsApplyPatch() bool { return e != nil }

@@ -13,17 +13,16 @@ import (
 func TestAntigravityCAQSNativeSanitizerRejectsPrefixedWrappers(t *testing.T) {
 	sig := antigravityCAQSFixture(t)
 	for _, test := range []struct {
-		name, prefix    string
-		wantDetected    SignatureProvider
-		wantAntigravity bool
+		name, prefix string
+		wantDetected SignatureProvider
 	}{
-		{"bare", "", SignatureProviderClaude, true},
-		{"single prefix", "claude#", SignatureProviderClaude, true},
-		{"alias prefix", "anthropic#", SignatureProviderClaude, true},
-		{"duplicate prefix", "claude#claude#", SignatureProviderUnknown, false},
-		{"nested unknown prefix", "claude#junk#", SignatureProviderUnknown, false},
-		{"nested alias prefix", "anthropic#cais#", SignatureProviderUnknown, false},
-		{"unknown prefix", "junk#", SignatureProviderUnknown, false},
+		{"bare", "", SignatureProviderClaude},
+		{"single prefix", "claude#", SignatureProviderClaude},
+		{"alias prefix", "anthropic#", SignatureProviderClaude},
+		{"duplicate prefix", "claude#claude#", SignatureProviderUnknown},
+		{"nested unknown prefix", "claude#junk#", SignatureProviderUnknown},
+		{"nested alias prefix", "anthropic#cais#", SignatureProviderUnknown},
+		{"unknown prefix", "junk#", SignatureProviderUnknown},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			raw := test.prefix + sig
@@ -33,10 +32,6 @@ func TestAntigravityCAQSNativeSanitizerRejectsPrefixedWrappers(t *testing.T) {
 			decision := DecideSignatureCompatibility(SignatureProviderClaude, raw, SignatureBlockKindClaudeThinking)
 			if decision.Compatible || decision.Action != SignatureActionDropBlock || decision.NormalizedSignature != "" {
 				t.Errorf("native Claude must reject Q wrapper: %+v", decision)
-			}
-			normalized, ok := CompatibleAntigravityClaudeThinkingSignature(raw)
-			if ok != test.wantAntigravity || (ok && normalized != sig) || (!ok && normalized != "") {
-				t.Errorf("Antigravity compatibility = %t, normalized length = %d", ok, len(normalized))
 			}
 			encoded, errMarshal := json.Marshal(raw)
 			if errMarshal != nil {
@@ -137,8 +132,5 @@ func assertAntigravityCAQSDuplicateRejected(t *testing.T, raw []byte) {
 	}
 	if DetectSignatureProvider(sig) != SignatureProviderUnknown {
 		t.Error("duplicate submessage classified as a valid signature")
-	}
-	if normalized, ok := CompatibleAntigravityClaudeThinkingSignature(sig); ok || normalized != "" {
-		t.Error("duplicate submessage allowed for Antigravity replay")
 	}
 }

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -685,8 +684,8 @@ func TestCodexContinuityScopeAndAuthorityBoundaries(t *testing.T) {
 		if _, errRegister := manager.Register(context.Background(), &Auth{ID: "ag-1", Provider: "antigravity", Status: StatusActive, Attributes: map[string]string{"priority": "1"}}); errRegister != nil {
 			t.Fatalf("register ag: %v", errRegister)
 		}
-		registry.GetGlobalRegistry().RegisterClient("codex-1", "codex", []*registry.ModelInfo{{ID: "gpt-5-codex"}})
-		registry.GetGlobalRegistry().RegisterClient("ag-1", "antigravity", []*registry.ModelInfo{{ID: "gpt-5-codex"}})
+		registry.GetGlobalRegistry().RegisterClient("codex-1", "codex", []*registry.ModelInfo{{ID: "gemini-quota-test"}})
+		registry.GetGlobalRegistry().RegisterClient("ag-1", "antigravity", []*registry.ModelInfo{{ID: "gemini-quota-test"}})
 		t.Cleanup(func() {
 			registry.GetGlobalRegistry().UnregisterClient("codex-1")
 			registry.GetGlobalRegistry().UnregisterClient("ag-1")
@@ -699,7 +698,7 @@ func TestCodexContinuityScopeAndAuthorityBoundaries(t *testing.T) {
 				return pluginapi.SchedulerContinuityResponse{Decision: pluginapi.SchedulerContinuityReady}, true, nil
 			},
 		})
-		_, errExec := manager.Execute(context.Background(), []string{"codex", "antigravity"}, cliproxyexecutor.Request{Model: "gpt-5-codex"}, cliproxyexecutor.Options{})
+		_, errExec := manager.Execute(context.Background(), []string{"codex", "antigravity"}, cliproxyexecutor.Request{Model: "gemini-quota-test"}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 		if errExec == nil {
 			t.Fatal("Execute() error = nil, want 429 error")
 		}
@@ -760,166 +759,6 @@ func TestCodexContinuityScopeAndAuthorityBoundaries(t *testing.T) {
 		}
 		if execCalls.Load() != 0 {
 			t.Fatalf("execCalls = %d, want 0 when ready returned past deadline", execCalls.Load())
-		}
-	})
-
-	t.Run("continuity termination skips antigravity credits fallback", func(t *testing.T) {
-		for _, tc := range []struct {
-			name     string
-			decision pluginapi.SchedulerContinuityDecision
-		}{
-			{name: "disabled", decision: pluginapi.SchedulerContinuityDisabled},
-			{name: "budget_exhausted", decision: pluginapi.SchedulerContinuityWait},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				manager := NewManager(nil, nil, nil)
-				manager.SetRetryConfig(1, 0, 0)
-				manager.SetConfig(&internalconfig.Config{
-					QuotaExceeded: internalconfig.QuotaExceeded{AntigravityCredits: true},
-				})
-				var agCalls atomic.Int32
-				manager.RegisterExecutor(&continuityTestExecutor{
-					provider: "codex",
-					execFn: func(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-						return cliproxyexecutor.Response{}, codexQuotaRejectionErr{
-							status:           http.StatusTooManyRequests,
-							msg:              `{"error":{"code":"usage_limit_reached"}}`,
-							credentialScoped: true,
-						}
-					},
-					streamFn: func(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-						return nil, codexQuotaRejectionErr{
-							status:           http.StatusTooManyRequests,
-							msg:              `{"error":{"code":"usage_limit_reached"}}`,
-							credentialScoped: true,
-						}
-					},
-				})
-				manager.RegisterExecutor(&continuityTestExecutor{
-					provider: "antigravity",
-					execFn: func(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-						agCalls.Add(1)
-						return cliproxyexecutor.Response{Payload: []byte(`{"ok":"ag"}`)}, nil
-					},
-					streamFn: func(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-						agCalls.Add(1)
-						ch := make(chan cliproxyexecutor.StreamChunk, 1)
-						ch <- cliproxyexecutor.StreamChunk{Payload: []byte(`{"ok":"ag"}`)}
-						close(ch)
-						return &cliproxyexecutor.StreamResult{Chunks: ch}, nil
-					},
-				})
-
-				recoverAt := time.Now().Add(time.Minute)
-				if _, errRegister := manager.Register(context.Background(), &Auth{
-					ID:         "codex-1",
-					Provider:   "codex",
-					Status:     StatusActive,
-					Attributes: map[string]string{"priority": "10"},
-				}); errRegister != nil {
-					t.Fatalf("register codex: %v", errRegister)
-				}
-				if _, errRegister := manager.Register(context.Background(), &Auth{
-					ID:             "ag-1",
-					Provider:       "antigravity",
-					Status:         StatusActive,
-					Quota:          QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: recoverAt},
-					NextRetryAfter: recoverAt,
-				}); errRegister != nil {
-					t.Fatalf("register ag: %v", errRegister)
-				}
-				const testModel = "claude-sonnet-4-6"
-				registry.GetGlobalRegistry().RegisterClient("codex-1", "codex", []*registry.ModelInfo{{ID: testModel}})
-				registry.GetGlobalRegistry().RegisterClient("ag-1", "antigravity", []*registry.ModelInfo{{ID: testModel}})
-				SetAntigravityCreditsHint("ag-1", AntigravityCreditsHint{Known: true, Available: true, UpdatedAt: time.Now()})
-				t.Cleanup(func() {
-					registry.GetGlobalRegistry().UnregisterClient("codex-1")
-					registry.GetGlobalRegistry().UnregisterClient("ag-1")
-					SetAntigravityCreditsHint("ag-1", AntigravityCreditsHint{})
-				})
-
-				manager.SetPluginScheduler(&testContinuityScheduler{
-					hasContinuity: true,
-					continuityFunc: func(context.Context, pluginapi.SchedulerContinuityRequest) (pluginapi.SchedulerContinuityResponse, bool, error) {
-						if tc.decision == pluginapi.SchedulerContinuityWait {
-							return pluginapi.SchedulerContinuityResponse{
-								Decision:       pluginapi.SchedulerContinuityWait,
-								PollIntervalMs: 10,
-								WaitBudgetMs:   -1,
-							}, true, nil
-						}
-						return pluginapi.SchedulerContinuityResponse{Decision: pluginapi.SchedulerContinuityDisabled}, true, nil
-					},
-				})
-
-				if _, errExec := manager.Execute(context.Background(), []string{"codex", "antigravity"}, cliproxyexecutor.Request{Model: testModel}, cliproxyexecutor.Options{}); errExec == nil {
-					t.Fatal("Execute() error = nil, want 429 error")
-				}
-				if _, errStream := manager.ExecuteStream(context.Background(), []string{"codex", "antigravity"}, cliproxyexecutor.Request{Model: testModel}, cliproxyexecutor.Options{Stream: true}); errStream == nil {
-					t.Fatal("ExecuteStream() error = nil, want 429 error")
-				}
-				if agCalls.Load() != 0 {
-					t.Fatalf("agCalls = %d, want 0 when Codex continuity terminated", agCalls.Load())
-				}
-			})
-		}
-	})
-
-	t.Run("empty codex pre-admission candidates do not block antigravity credits fallback", func(t *testing.T) {
-		manager := NewManager(nil, nil, nil)
-		manager.SetConfig(&internalconfig.Config{
-			QuotaExceeded: internalconfig.QuotaExceeded{AntigravityCredits: true},
-		})
-		var agCalls atomic.Int32
-		manager.RegisterExecutor(&continuityTestExecutor{provider: "codex"})
-		manager.RegisterExecutor(&continuityTestExecutor{
-			provider: "antigravity",
-			execFn: func(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-				agCalls.Add(1)
-				return cliproxyexecutor.Response{Payload: []byte(`{"ok":"ag-credits"}`)}, nil
-			},
-		})
-		recoverAt := time.Now().Add(time.Minute)
-		if _, errRegister := manager.Register(context.Background(), &Auth{
-			ID:       "codex-disabled",
-			Provider: "codex",
-			Status:   StatusDisabled,
-			Disabled: true,
-		}); errRegister != nil {
-			t.Fatalf("register codex: %v", errRegister)
-		}
-		if _, errRegister := manager.Register(context.Background(), &Auth{
-			ID:             "ag-1",
-			Provider:       "antigravity",
-			Status:         StatusActive,
-			Quota:          QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: recoverAt},
-			NextRetryAfter: recoverAt,
-		}); errRegister != nil {
-			t.Fatalf("register ag: %v", errRegister)
-		}
-		const testModel = "claude-sonnet-4-6"
-		registry.GetGlobalRegistry().RegisterClient("codex-disabled", "codex", []*registry.ModelInfo{{ID: testModel}})
-		registry.GetGlobalRegistry().RegisterClient("ag-1", "antigravity", []*registry.ModelInfo{{ID: testModel}})
-		SetAntigravityCreditsHint("ag-1", AntigravityCreditsHint{Known: true, Available: true, UpdatedAt: time.Now()})
-		t.Cleanup(func() {
-			registry.GetGlobalRegistry().UnregisterClient("codex-disabled")
-			registry.GetGlobalRegistry().UnregisterClient("ag-1")
-			SetAntigravityCreditsHint("ag-1", AntigravityCreditsHint{})
-		})
-		var continuityCalls atomic.Int32
-		manager.SetPluginScheduler(&testContinuityScheduler{
-			hasContinuity: true,
-			continuityFunc: func(context.Context, pluginapi.SchedulerContinuityRequest) (pluginapi.SchedulerContinuityResponse, bool, error) {
-				continuityCalls.Add(1)
-				return pluginapi.SchedulerContinuityResponse{Decision: pluginapi.SchedulerContinuityDisabled}, true, nil
-			},
-		})
-		resp, errExec := manager.Execute(context.Background(), []string{"codex", "antigravity"}, cliproxyexecutor.Request{Model: testModel}, cliproxyexecutor.Options{})
-		if errExec != nil {
-			t.Fatalf("Execute() error = %v, want antigravity credits fallback success", errExec)
-		}
-		if string(resp.Payload) != `{"ok":"ag-credits"}` || agCalls.Load() != 1 || continuityCalls.Load() != 0 {
-			t.Fatalf("resp=%s agCalls=%d continuityCalls=%d, want ag-credits/1/0", resp.Payload, agCalls.Load(), continuityCalls.Load())
 		}
 	})
 

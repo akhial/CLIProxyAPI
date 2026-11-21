@@ -25,64 +25,34 @@ import (
 
 // Execute performs a non-streaming request to the Antigravity API.
 func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
-	if helps.HasResponsesCompactionItem(req.Payload) {
-		expanded, errExpand := helps.ExpandAntigravityCompactionCapsules(req.Payload)
-		if errExpand != nil {
-			return resp, statusErr{code: http.StatusBadRequest, msg: errExpand.Error()}
-		}
-		req.Payload = expanded
-		if len(opts.OriginalRequest) > 0 {
-			expandedOrig, errOrig := helps.ExpandAntigravityCompactionCapsules(opts.OriginalRequest)
-			if errOrig == nil {
-				opts.OriginalRequest = expandedOrig
-			} else {
-				opts.OriginalRequest = expanded
-			}
-		}
-	}
-	if opts.Alt == "responses/compact" || helps.HasResponsesCompactionTrigger(req.Payload) || helps.HasResponsesCompactionTrigger(opts.OriginalRequest) {
-		return e.executeCompaction(ctx, auth, req, opts)
-	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	if err := validateAntigravityRoute(baseModel, opts); err != nil {
+		return resp, err
+	}
 	if antigravityInTOSPause(e.cfg, auth) {
 		return resp, statusErr{code: http.StatusServiceUnavailable, msg: "antigravity pool paused after TOS_VIOLATION"}
 	}
 	if !antigravityCoolingDisabled(auth, e.cfg) {
 		if inCooldown, remaining, errCooldown := antigravityIsInShortCooldownRequired(ctx, auth, baseModel, time.Now()); errCooldown != nil {
 			return resp, homeKVUnavailableStatusErr(errCooldown)
-		} else if inCooldown && !antigravityShouldBypassShortCooldown(ctx, e.cfg) {
+		} else if inCooldown {
 			log.Debugf("antigravity executor: auth %s in short cooldown for model %s (%s remaining), returning 429 to switch auth", auth.ID, baseModel, remaining)
 			d := remaining
 			return resp, statusErr{code: http.StatusTooManyRequests, msg: fmt.Sprintf("auth in short cooldown, %s remaining", remaining), retryAfter: &d}
 		}
 	}
 
-	isClaude := strings.Contains(strings.ToLower(baseModel), "claude")
-	if isClaude || strings.Contains(baseModel, "gemini-3-pro") || strings.Contains(baseModel, "gemini-3.1-flash-image") {
-		return e.executeClaudeNonStream(ctx, auth, req, opts)
+	if strings.Contains(baseModel, "gemini-3-pro") || strings.Contains(baseModel, "gemini-3.1-flash-image") {
+		return e.executeAggregatedStream(ctx, auth, req, opts)
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
-	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
-	to := sdktranslator.FromString("antigravity")
+	to := sdktranslator.FormatAntigravity
 
-	originalPayloadSource := req.Payload
-	if len(opts.OriginalRequest) > 0 {
-		originalPayloadSource = opts.OriginalRequest
-	}
-	originalPayload := originalPayloadSource
-	originalPayload, errValidate := validateAntigravityRequestSignatures(ctx, baseModel, from, originalPayload)
-	if errValidate != nil {
-		return resp, errValidate
-	}
-	req.Payload = originalPayload
-	// Observe a translation refusal before the token refresh or any upstream call.
-	modelInfo, _ := cliproxyauth.ResolvedModelInfo(req)
-	translationReq := sdktranslator.RequestEnvelope{Format: from, Model: baseModel, ModelInfo: modelInfo}
-	originalTranslated, translated, errTranslate := helps.TranslateRequestEnvelopePairWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, translationReq, originalPayload, req.Payload)
+	doc, baseline, errTranslate := antigravityPayload(req, opts)
 	if errTranslate != nil {
 		return resp, errTranslate
 	}
@@ -95,49 +65,24 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		reporter.UpdateAccessTokenFingerprint(auth)
 	}
 
-	doc := ojson.NewDoc(translated)
-	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
-		return resp, err
-	}
-
-	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, "antigravity", "request", originalTranslated, req, opts)
+	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, "antigravity", "request", baseline, req, opts)
 	ctx = helps.WithPayloadFinalizer(ctx, finalize)
-	e.obfuscateSensitiveWordsDoc(doc)
-	sanitizeAntigravityGeminiRequestSignaturesDoc(baseModel, doc)
-
-	useCredits := cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(e.cfg)
 
 	baseURL := resolveAntigravityRequestBaseURL(auth)
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	// Credential retry rounds are owned by the conductor. Perform one upstream
 	// request per credential so request-retry is not consumed twice.
-	if useCredits {
-		if injectEnabledCreditTypesDoc(doc) {
-			helps.MarkCreditsUsed(ctx)
-		}
-	}
-	replayScope := antigravityReasoningReplayScope{}
-	if antigravityUsesReasoningReplayCache(baseModel) {
-		var errReplay error
-		replayScope, _, errReplay = prepareAntigravityGeminiReasoningReplayPayloadDoc(ctx, baseModel, req, opts, doc)
-		if errReplay != nil {
-			err = errReplay
-			return resp, err
-		}
-	}
-	ensureAntigravityGeminiBoundaryUserContentDoc(baseModel, doc)
-	var replayRequestPayload []byte
-	if replayScope.valid() {
-		replayRequestPayload, _ = antigravityReplayRequestEnvelopeFromDoc(doc)
+	errPrepare := e.prepareGenerationDoc(ctx, doc, req, opts)
+	if errPrepare != nil {
+		return resp, errPrepare
 	}
 
-	httpReq, requestPayload, errReq := e.buildRequestDoc(ctx, auth, token, baseModel, doc, false, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
+	httpReq, requestPayload, errReq := e.buildRequestDoc(ctx, auth, token, baseModel, doc, false, opts, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
 	if errReq != nil {
 		err = errReq
 		return resp, err
 	}
-	translated = requestPayload
 	reporter.SetTranslatedRequestMetadata(requestPayload, to.String())
 
 	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "generate").Do(httpReq)
@@ -176,19 +121,12 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 			}
 		case antigravity429DecisionFullQuotaExhausted:
 			closeAntigravityAuthIdleTransports(auth)
-			if useCredits && antigravityHasExplicitCreditsBalanceExhaustedReason(bodyBytes) && !antigravityCoolingDisabled(auth, e.cfg) {
-				markAntigravityCreditsPermanentlyDisabled(auth)
-			}
-			// No credits logic - just fall through to error return below
+
 		}
 	}
 
 	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
 		log.Debugf("antigravity executor: upstream error status: %d, body: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), bodyBytes))
-		if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, replayScope, httpResp.StatusCode, bodyBytes); errClear != nil {
-			// Report the upstream failure rather than the cleanup failure.
-			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
-		}
 		if httpResp.StatusCode == http.StatusForbidden {
 			e.applyAntigravityTOSState(e.cfg, auth, bodyBytes)
 		}
@@ -197,9 +135,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	// Success
-	if useCredits {
-		clearAntigravityCreditsFailureState(auth)
-	}
+
 	reporter.ObserveResponseModel(bodyBytes)
 	if _, zeroErrMsg, zeroOutput := helps.CheckGeminiZeroOutputNonStream(responseFormat, bodyBytes, true); zeroOutput {
 		antiDetail := helps.ParseAntigravityUsage(bodyBytes)
@@ -209,122 +145,26 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		reporter.PublishFailureWithDetail(ctx, antiDetail, err)
 		return cliproxyexecutor.Response{}, err
 	}
-	if len(replayRequestPayload) == 0 {
-		replayRequestPayload = requestPayload
-	}
-	cacheAntigravityReasoningReplayFromResponse(ctx, replayScope, replayRequestPayload, bodyBytes)
-	bodyBytes = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, bodyBytes)
 	var param any
-	converted := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, bodyBytes, &param)
-	if helps.ApplyPatchTranslationError(param) != nil || len(converted) == 0 {
-		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
-	}
-	if errPayload, okErr := helps.TranslatedClaudeErrorPayload(responseFormat, converted); okErr {
-		err = newGeminiTranslatedClaudeErrorStatusErr(errPayload)
-		antiDetail := helps.ParseAntigravityUsage(bodyBytes)
-		helps.ApplyGeminiRequestImageConfig(&antiDetail, requestPayload)
-		reporter.PublishFailureWithDetail(ctx, antiDetail, err)
-		return cliproxyexecutor.Response{}, err
-	}
+	converted := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, nil, requestPayload, bodyBytes, &param)
 	antiDetail := helps.ParseAntigravityUsage(bodyBytes)
 	helps.ApplyGeminiRequestImageConfig(&antiDetail, requestPayload)
 	reporter.Publish(ctx, antiDetail)
-	if responseFormat == sdktranslator.FormatOpenAIResponse {
-		converted = helps.EnsureResponsesUsageDetails(converted)
-	}
 	resp = cliproxyexecutor.Response{Payload: converted, Headers: httpResp.Header.Clone()}
 	reporter.EnsurePublished(ctx)
 	return resp, nil
 }
 
-func (e *AntigravityExecutor) executeCompaction(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+func (e *AntigravityExecutor) executeAggregatedStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
-	payload := req.Payload
-	if len(payload) == 0 && len(opts.OriginalRequest) > 0 {
-		payload = opts.OriginalRequest
-	}
-	summaryPayload := helps.PrepareAntigravityCompactionSummaryPayload(payload, baseModel)
-
-	summaryReq := cliproxyexecutor.Request{
-		Model:    req.Model,
-		Payload:  summaryPayload,
-		Metadata: req.Metadata,
-	}
-	summaryOpts := opts
-	summaryOpts.Alt = ""
-	summaryOpts.Stream = false
-	summaryOpts.OriginalRequest = nil
-	summaryOpts.SourceFormat = sdktranslator.FormatOpenAIResponse
-	summaryOpts.ResponseFormat = sdktranslator.FormatOpenAIResponse
-
-	summaryResp, errSummary := e.Execute(ctx, auth, summaryReq, summaryOpts)
-	if errSummary != nil {
-		return resp, errSummary
-	}
-
-	summaryText, errExtract := helps.ExtractAntigravitySummaryText(summaryResp.Payload)
-	if errExtract != nil {
-		return resp, fmt.Errorf("extract summary: %w", errExtract)
-	}
-	capsule, errSeal := helps.SealAntigravityCompaction(summaryText, baseModel)
-	if errSeal != nil {
-		return resp, fmt.Errorf("seal compaction capsule: %w", errSeal)
-	}
-
-	inputTokens := int(ojson.GetBytesNoCopy(summaryResp.Payload, "usage.input_tokens").Int())
-	outputTokens := int(ojson.GetBytesNoCopy(summaryResp.Payload, "usage.output_tokens").Int())
-	totalTokens := int(ojson.GetBytesNoCopy(summaryResp.Payload, "usage.total_tokens").Int())
-	if totalTokens == 0 && inputTokens == 0 {
-		usage := helps.ParseOpenAIUsage(summaryResp.Payload)
-		inputTokens = int(usage.InputTokens)
-		outputTokens = int(usage.OutputTokens)
-		totalTokens = int(usage.TotalTokens)
-	}
-
-	respBytes := helps.BuildAntigravityCompactionResponse(baseModel, capsule, inputTokens, outputTokens, totalTokens)
-	return cliproxyexecutor.Response{
-		Payload: respBytes,
-		Headers: summaryResp.Headers,
-	}, nil
-}
-
-// executeClaudeNonStream performs a claude non-streaming request to the Antigravity API.
-func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
-	baseModel := thinking.ParseSuffix(req.Model).ModelName
-	if antigravityInTOSPause(e.cfg, auth) {
-		return resp, statusErr{code: http.StatusServiceUnavailable, msg: "antigravity pool paused after TOS_VIOLATION"}
-	}
-	if !antigravityCoolingDisabled(auth, e.cfg) {
-		if inCooldown, remaining, errCooldown := antigravityIsInShortCooldownRequired(ctx, auth, baseModel, time.Now()); errCooldown != nil {
-			return resp, homeKVUnavailableStatusErr(errCooldown)
-		} else if inCooldown && !antigravityShouldBypassShortCooldown(ctx, e.cfg) {
-			log.Debugf("antigravity executor: auth %s in short cooldown for model %s (%s remaining), returning 429 to switch auth", auth.ID, baseModel, remaining)
-			d := remaining
-			return resp, statusErr{code: http.StatusTooManyRequests, msg: fmt.Sprintf("auth in short cooldown, %s remaining", remaining), retryAfter: &d}
-		}
-	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
-	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
-	to := sdktranslator.FromString("antigravity")
+	to := sdktranslator.FormatAntigravity
 
-	originalPayloadSource := req.Payload
-	if len(opts.OriginalRequest) > 0 {
-		originalPayloadSource = opts.OriginalRequest
-	}
-	originalPayload := originalPayloadSource
-	originalPayload, errValidate := validateAntigravityRequestSignatures(ctx, baseModel, from, originalPayload)
-	if errValidate != nil {
-		return resp, errValidate
-	}
-	req.Payload = originalPayload
-	// Observe a translation refusal before the token refresh or any upstream call.
-	modelInfo, _ := cliproxyauth.ResolvedModelInfo(req)
-	translationReq := sdktranslator.RequestEnvelope{Format: from, Model: baseModel, Stream: true, ModelInfo: modelInfo}
-	originalTranslated, translated, errTranslate := helps.TranslateRequestEnvelopePairWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, translationReq, originalPayload, req.Payload)
+	doc, baseline, errTranslate := antigravityPayload(req, opts)
 	if errTranslate != nil {
 		return resp, errTranslate
 	}
@@ -337,17 +177,8 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		reporter.UpdateAccessTokenFingerprint(auth)
 	}
 
-	doc := ojson.NewDoc(translated)
-	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier()); err != nil {
-		return resp, err
-	}
-
-	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, "antigravity", "request", originalTranslated, req, opts)
+	finalize := helps.NewPayloadFinalizer(e.cfg, e.Identifier(), baseModel, "antigravity", "request", baseline, req, opts)
 	ctx = helps.WithPayloadFinalizer(ctx, finalize)
-	e.obfuscateSensitiveWordsDoc(doc)
-	sanitizeAntigravityGeminiRequestSignaturesDoc(baseModel, doc)
-
-	useCredits := cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(e.cfg)
 
 	baseURL := resolveAntigravityRequestBaseURL(auth)
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
@@ -355,31 +186,15 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 
 	// Credential retry rounds are owned by the conductor. Perform one upstream
 	// request per credential so request-retry is not consumed twice.
-	if useCredits {
-		if injectEnabledCreditTypesDoc(doc) {
-			helps.MarkCreditsUsed(ctx)
-		}
+	errPrepare := e.prepareGenerationDoc(ctx, doc, req, opts)
+	if errPrepare != nil {
+		return resp, errPrepare
 	}
-	replayScope := antigravityReasoningReplayScope{}
-	if antigravityUsesReasoningReplayCache(baseModel) {
-		var errReplay error
-		replayScope, _, errReplay = prepareAntigravityGeminiReasoningReplayPayloadDoc(ctx, baseModel, req, opts, doc)
-		if errReplay != nil {
-			err = errReplay
-			return resp, err
-		}
-	}
-	ensureAntigravityGeminiBoundaryUserContentDoc(baseModel, doc)
-	var replayRequestPayload []byte
-	if replayScope.valid() {
-		replayRequestPayload, _ = antigravityReplayRequestEnvelopeFromDoc(doc)
-	}
-	httpReq, requestPayload, errReq := e.buildRequestDoc(ctx, auth, token, baseModel, doc, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
+	httpReq, requestPayload, errReq := e.buildRequestDoc(ctx, auth, token, baseModel, doc, true, opts, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
 	if errReq != nil {
 		err = errReq
 		return resp, err
 	}
-	translated = requestPayload
 	reporter.SetTranslatedRequestMetadata(requestPayload, to.String())
 
 	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "generate").Do(httpReq)
@@ -426,17 +241,10 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 				}
 			case antigravity429DecisionFullQuotaExhausted:
 				closeAntigravityAuthIdleTransports(auth)
-				if useCredits && antigravityHasExplicitCreditsBalanceExhaustedReason(bodyBytes) && !antigravityCoolingDisabled(auth, e.cfg) {
-					markAntigravityCreditsPermanentlyDisabled(auth)
-				}
-				// No credits logic - just fall through to error return below
+
 			}
 		}
 
-		if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, replayScope, httpResp.StatusCode, bodyBytes); errClear != nil {
-			// Report the upstream failure rather than the cleanup failure.
-			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
-		}
 		if httpResp.StatusCode == http.StatusForbidden {
 			e.applyAntigravityTOSState(e.cfg, auth, bodyBytes)
 		}
@@ -445,13 +253,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	}
 
 	// Stream success
-	if useCredits {
-		clearAntigravityCreditsFailureState(auth)
-	}
-	if len(replayRequestPayload) == 0 {
-		replayRequestPayload = requestPayload
-	}
-	replayAccumulator := newAntigravityReasoningReplayAccumulator(replayScope, replayRequestPayload)
+
 	var rawPayloads [][]byte
 	var pendingFilterPayload []byte
 	var pendingFilterMsg string
@@ -461,9 +263,6 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-		if replayAccumulator != nil {
-			replayAccumulator.ObserveSSELine(line)
-		}
 		payload := helps.JSONPayload(line)
 		if len(pendingJSON) > 0 {
 			// Reassemble a logical SSE event whose JSON is split across multiple
@@ -545,31 +344,14 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		reporter.PublishFailureWithDetail(ctx, antiDetail, err)
 		return cliproxyexecutor.Response{}, err
 	}
-	if replayAccumulator != nil {
-		replayAccumulator.Commit(ctx)
-	}
 	resp = cliproxyexecutor.Response{Payload: aggregatedPayload}
 
-	resp.Payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, resp.Payload)
 	reporter.ObserveResponseModel(resp.Payload)
 	var param any
-	converted := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, resp.Payload, &param)
-	if helps.ApplyPatchTranslationError(param) != nil || len(converted) == 0 {
-		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
-	}
-	if errPayload, okErr := helps.TranslatedClaudeErrorPayload(responseFormat, converted); okErr {
-		err = newGeminiTranslatedClaudeErrorStatusErr(errPayload)
-		antiDetail := helps.ParseAntigravityUsage(resp.Payload)
-		helps.ApplyGeminiRequestImageConfig(&antiDetail, requestPayload)
-		reporter.PublishFailureWithDetail(ctx, antiDetail, err)
-		return cliproxyexecutor.Response{}, err
-	}
+	converted := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, nil, requestPayload, resp.Payload, &param)
 	antiDetail := helps.ParseAntigravityUsage(resp.Payload)
 	helps.ApplyGeminiRequestImageConfig(&antiDetail, requestPayload)
 	reporter.Publish(ctx, antiDetail)
-	if responseFormat == sdktranslator.FormatOpenAIResponse {
-		converted = helps.EnsureResponsesUsageDetails(converted)
-	}
 	resp = cliproxyexecutor.Response{Payload: converted, Headers: httpResp.Header.Clone()}
 	reporter.EnsurePublished(ctx)
 
@@ -577,25 +359,6 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 }
 
 const antigravityPartsPlaceholder = `"__cpa_parts_placeholder__"`
-
-func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
-	var chunks [][]byte
-	remaining := stream
-	for len(remaining) > 0 {
-		var line []byte
-		if nl := bytes.IndexByte(remaining, '\n'); nl >= 0 {
-			line = remaining[:nl]
-			remaining = remaining[nl+1:]
-		} else {
-			line = remaining
-			remaining = nil
-		}
-		if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
-			chunks = append(chunks, trimmed)
-		}
-	}
-	return e.convertStreamChunksToNonStream(chunks)
-}
 
 func (e *AntigravityExecutor) convertStreamChunksToNonStream(chunks [][]byte) []byte {
 	var (

@@ -438,15 +438,6 @@ func NormalizeSensitivePatternsReplace(in []SensitivePatternRule) []SensitivePat
 	return out
 }
 
-// SanitizeAntigravity normalizes Antigravity sensitive-word settings.
-func (cfg *Config) SanitizeAntigravity() {
-	if cfg == nil {
-		return
-	}
-	cfg.Antigravity.SensitiveWordsReplace = NormalizeSensitiveWordsReplace(cfg.Antigravity.SensitiveWordsReplace)
-	cfg.Antigravity.SensitivePatternsReplace = NormalizeSensitivePatternsReplace(cfg.Antigravity.SensitivePatternsReplace)
-}
-
 // SanitizeDevin normalizes Devin sensitive-word settings.
 func (cfg *Config) SanitizeDevin() {
 	if cfg == nil {

@@ -1,8 +1,4 @@
-// Package gemini provides request translation functionality for Gemini to Antigravity API compatibility.
-// It handles parsing and transforming Gemini API requests into Antigravity API format,
-// extracting model information, system instructions, message contents, and tool declarations.
-// The package performs JSON data transformation to ensure compatibility
-// between Gemini API format and Antigravity API's expected format.
+// Package gemini unwraps native Gemini responses from Cloud Code.
 package gemini
 
 import (
@@ -172,7 +168,6 @@ func ConvertAntigravityResponseToGemini(ctx context.Context, _ string, originalR
 					chunk = []byte(responseResult.Raw)
 				}
 				chunk = restoreUsageMetadata(chunk)
-				chunk = restoreGeminiFunctionNames(chunk, originalRequestRawJSON)
 			}
 		} else {
 			chunkDoc := ojson.NewDoc([]byte("[]"))
@@ -217,9 +212,8 @@ func ConvertAntigravityResponseToGeminiNonStream(_ context.Context, _ string, or
 			chunk = []byte(responseResult.Raw)
 		}
 		chunk = restoreUsageMetadata(chunk)
-		chunk = restoreGeminiFunctionNames(chunk, originalRequestRawJSON)
 	} else {
-		chunk = restoreGeminiFunctionNames(rawJSON, originalRequestRawJSON)
+		chunk = rawJSON
 	}
 	candidates := util.GetGJSONBytesNoCopy(chunk, "candidates")
 	if candidates.IsArray() {
@@ -240,39 +234,6 @@ func ConvertAntigravityResponseToGeminiNonStream(_ context.Context, _ string, or
 		if chunkDoc != nil {
 			chunk = chunkDoc.Bytes()
 		}
-	}
-	return chunk
-}
-
-func restoreGeminiFunctionNames(chunk, originalRequestRawJSON []byte) []byte {
-	nameMap := util.DisambiguatedToolNameMap(originalRequestRawJSON)
-	if len(nameMap) == 0 {
-		return chunk
-	}
-	var chunkDoc *ojson.Doc
-	candidates := ojson.GetBytesNoCopy(chunk, "candidates")
-	for candidateIndex, candidate := range candidates.Array() {
-		for partIndex, part := range candidate.Get("content.parts").Array() {
-			for _, field := range []string{"functionCall", "functionResponse", "function_call", "function_response"} {
-				nameResult := part.Get(field + ".name")
-				name := nameResult.String()
-				if name == "" {
-					continue
-				}
-				restoredName := util.RestoreSanitizedToolName(nameMap, name)
-				if nameResult.Type == ojson.String && restoredName == name {
-					continue
-				}
-				if chunkDoc == nil {
-					chunkDoc = ojson.NewDoc(chunk)
-				}
-				path := fmt.Sprintf("candidates.%d.content.parts.%d.%s.name", candidateIndex, partIndex, field)
-				_ = chunkDoc.Set(path, restoredName)
-			}
-		}
-	}
-	if chunkDoc != nil {
-		return chunkDoc.Bytes()
 	}
 	return chunk
 }

@@ -26,24 +26,18 @@ func buildExecutionPlansForExecute(cfg pluginConfig, req pluginapi.ModelRouteReq
 	if isFallbackRoute(route) {
 		return buildExecutionPlansInternal(cfg, req, false)
 	}
-	return executionPlansForExecuteRoute(cfg, req, route)
+	return executionPlansForExecuteRoute(cfg, route)
 }
 
 // executionPlansForExecuteRoute builds plans for plugin executor without requiring
 // ModelRouteRequest.AvailableProviders (host does not pass it on executor.execute_stream).
-func executionPlansForExecuteRoute(cfg pluginConfig, req pluginapi.ModelRouteRequest, route string) []executionPlan {
+func executionPlansForExecuteRoute(cfg pluginConfig, route string) []executionPlan {
 	backend := routeBackend(strings.TrimSpace(route))
-	if !backendRunnableLenient(backend, cfg, req) {
+	if !backendRunnableLenient(backend, cfg) {
 		return nil
 	}
 	var plans []executionPlan
 	switch backend {
-	case backendAntigravityGoogle:
-		model := resolveAntigravityWebSearchTargetModel(cfg.AntigravityModel, req.RequestedModel)
-		if model == "" {
-			return nil
-		}
-		plans = append(plans, executionPlan{backend: backend, model: model})
 	case backendCodexWebSearch:
 		plans = append(plans, executionPlan{backend: backend, model: resolveCodexWebSearchTargetModel(cfg.CodexModel)})
 	case backendXAIWebSearch:
@@ -66,15 +60,10 @@ func buildExecutionPlansInternal(cfg pluginConfig, req pluginapi.ModelRouteReque
 			if _, ok := tryRouteBackend(backend, cfg, req); !ok {
 				continue
 			}
-		} else if !backendRunnableLenient(backend, cfg, req) {
+		} else if !backendRunnableLenient(backend, cfg) {
 			continue
 		}
 		switch backend {
-		case backendAntigravityGoogle:
-			plans = append(plans, executionPlan{
-				backend: backend,
-				model:   resolveAntigravityWebSearchTargetModel(cfg.AntigravityModel, req.RequestedModel),
-			})
 		case backendCodexWebSearch:
 			plans = append(plans, executionPlan{
 				backend: backend,
@@ -94,12 +83,10 @@ func buildExecutionPlansInternal(cfg pluginConfig, req pluginapi.ModelRouteReque
 	return plans
 }
 
-func backendRunnableLenient(backend routeBackend, cfg pluginConfig, req pluginapi.ModelRouteRequest) bool {
+func backendRunnableLenient(backend routeBackend, cfg pluginConfig) bool {
 	switch backend {
 	case backendTavily:
 		return newTavilyClient(cfg.TavilyAPIKeys).available()
-	case backendAntigravityGoogle:
-		return resolveAntigravityWebSearchTargetModel(cfg.AntigravityModel, req.RequestedModel) != ""
 	case backendCodexWebSearch, backendXAIWebSearch:
 		return true
 	default:
@@ -117,12 +104,10 @@ func executionPlansForRoute(cfg pluginConfig, req pluginapi.ModelRouteRequest, r
 	}
 	var plans []executionPlan
 	for _, b := range []routeBackend{backend} {
-		if !backendRunnableLenient(b, cfg, req) {
+		if !backendRunnableLenient(b, cfg) {
 			continue
 		}
 		switch b {
-		case backendAntigravityGoogle:
-			plans = append(plans, executionPlan{backend: b, model: resolveAntigravityWebSearchTargetModel(cfg.AntigravityModel, req.RequestedModel)})
 		case backendCodexWebSearch:
 			plans = append(plans, executionPlan{backend: b, model: resolveCodexWebSearchTargetModel(cfg.CodexModel)})
 		case backendXAIWebSearch:

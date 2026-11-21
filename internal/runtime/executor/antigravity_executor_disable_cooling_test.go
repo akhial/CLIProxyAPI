@@ -16,8 +16,8 @@ import (
 )
 
 func TestAntigravityDisableCooling_ShortCooldownBypassedInHomeMode(t *testing.T) {
-	resetAntigravityCreditsRetryState()
-	t.Cleanup(resetAntigravityCreditsRetryState)
+	resetAntigravityCooldownState()
+	t.Cleanup(resetAntigravityCooldownState)
 
 	cliproxyauth.SetQuotaCooldownDisabled(true)
 	t.Cleanup(func() { cliproxyauth.SetQuotaCooldownDisabled(false) })
@@ -40,7 +40,7 @@ func TestAntigravityDisableCooling_ShortCooldownBypassedInHomeMode(t *testing.T)
 		},
 	}
 
-	modelName := "claude-sonnet-4-5"
+	modelName := "gemini-3.8-flash-high"
 	now := time.Now()
 	duration := 30 * time.Second
 
@@ -82,7 +82,7 @@ func TestAntigravityDisableCooling_ShortCooldownBypassedInHomeMode(t *testing.T)
 		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`),
 	}
 	opts := cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FormatClaude,
+		SourceFormat: sdktranslator.FormatGemini,
 	}
 	_, _ = exec.Execute(execCtx, auth, req, opts)
 	if client.setCount != 0 {
@@ -91,8 +91,8 @@ func TestAntigravityDisableCooling_ShortCooldownBypassedInHomeMode(t *testing.T)
 }
 
 func TestAntigravityDisableCooling_ExecuteStreamBypassesShortCooldown(t *testing.T) {
-	resetAntigravityCreditsRetryState()
-	t.Cleanup(resetAntigravityCreditsRetryState)
+	resetAntigravityCooldownState()
+	t.Cleanup(resetAntigravityCooldownState)
 
 	client := newFakeAntigravityKVClient()
 	useFakeAntigravityKVClient(t, client, true, nil)
@@ -112,7 +112,7 @@ func TestAntigravityDisableCooling_ExecuteStreamBypassesShortCooldown(t *testing
 		},
 	}
 
-	modelName := "claude-sonnet-4-5"
+	modelName := "gemini-3.8-flash-high"
 	upstreamResp := `{"error":{"code":429,"message":"Rate limit exceeded","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED"}]}}`
 	execCtx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		h := make(http.Header)
@@ -130,7 +130,7 @@ func TestAntigravityDisableCooling_ExecuteStreamBypassesShortCooldown(t *testing
 		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`),
 	}
 	opts := cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FormatClaude,
+		SourceFormat: sdktranslator.FormatGemini,
 	}
 	_, _ = exec.ExecuteStream(execCtx, auth, req, opts)
 	if client.setCount != 0 {
@@ -139,8 +139,8 @@ func TestAntigravityDisableCooling_ExecuteStreamBypassesShortCooldown(t *testing
 }
 
 func TestAntigravityDisableCooling_AuthOverrideBypassesShortCooldown(t *testing.T) {
-	resetAntigravityCreditsRetryState()
-	t.Cleanup(resetAntigravityCreditsRetryState)
+	resetAntigravityCooldownState()
+	t.Cleanup(resetAntigravityCooldownState)
 
 	client := newFakeAntigravityKVClient()
 	useFakeAntigravityKVClient(t, client, false, nil)
@@ -158,7 +158,7 @@ func TestAntigravityDisableCooling_AuthOverrideBypassesShortCooldown(t *testing.
 		},
 	}
 
-	modelName := "claude-sonnet-4-5"
+	modelName := "gemini-3.8-flash-high"
 	now := time.Now()
 	duration := 30 * time.Second
 
@@ -199,64 +199,10 @@ func TestAntigravityDisableCooling_AuthOverrideBypassesShortCooldown(t *testing.
 		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`),
 	}
 	opts := cliproxyexecutor.Options{
-		SourceFormat: sdktranslator.FormatClaude,
+		SourceFormat: sdktranslator.FormatGemini,
 	}
 	_, _ = exec.Execute(execCtx, auth, req, opts)
 	if _, loaded := antigravityShortCooldownByAuth.Load(antigravityShortCooldownKey(auth, modelName)); loaded {
 		t.Fatalf("Execute recorded short cooldown to memory map, want skipped when auth has disable_cooling override")
-	}
-}
-
-func TestAntigravityDisableCooling_CreditsHintRefreshBypassedInHomeMode(t *testing.T) {
-	resetAntigravityCreditsRetryState()
-	t.Cleanup(resetAntigravityCreditsRetryState)
-
-	client := newFakeAntigravityKVClient()
-	useFakeAntigravityKVClient(t, client, true, nil)
-
-	cfg := &config.Config{
-		DisableCooling: true,
-		Home: config.HomeConfig{
-			Enabled: true,
-		},
-		QuotaExceeded: config.QuotaExceeded{
-			AntigravityCredits: true,
-		},
-	}
-	exec := NewAntigravityExecutor(cfg)
-	auth := &cliproxyauth.Auth{
-		ID: "home-refresh-cooling-disabled-auth",
-		Metadata: map[string]any{
-			"access_token": "token",
-			"project_id":   "test-project",
-		},
-	}
-
-	exec.maybeRefreshAntigravityCreditsHint(context.Background(), auth, "token")
-	if client.setNXCount != 0 {
-		t.Fatalf("KVSetNX count = %d, want 0 when DisableCooling is true", client.setNXCount)
-	}
-}
-
-func TestAntigravityDisableCooling_CreditsPermanentlyDisabledBypassed(t *testing.T) {
-	resetAntigravityCreditsRetryState()
-	t.Cleanup(resetAntigravityCreditsRetryState)
-
-	client := newFakeAntigravityKVClient()
-	useFakeAntigravityKVClient(t, client, true, nil)
-
-	auth := &cliproxyauth.Auth{
-		ID: "home-permanently-disabled-auth",
-		Metadata: map[string]any{
-			"disable_cooling": true,
-		},
-	}
-
-	markAntigravityCreditsPermanentlyDisabled(auth)
-	if client.setCount != 0 {
-		t.Fatalf("KVSet count = %d, want 0 when DisableCooling is true", client.setCount)
-	}
-	if cliproxyauth.HasKnownAntigravityCreditsHint(auth.ID) {
-		t.Fatalf("credits hint was stored for auth with DisableCooling true")
 	}
 }

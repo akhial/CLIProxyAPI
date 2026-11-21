@@ -111,18 +111,6 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.QuotaExceeded.SwitchPreviewModel != newCfg.QuotaExceeded.SwitchPreviewModel {
 		changes = append(changes, fmt.Sprintf("quota-exceeded.switch-preview-model: %t -> %t", oldCfg.QuotaExceeded.SwitchPreviewModel, newCfg.QuotaExceeded.SwitchPreviewModel))
 	}
-	if oldCfg.QuotaExceeded.AntigravityCredits != newCfg.QuotaExceeded.AntigravityCredits {
-		changes = append(changes, fmt.Sprintf("quota-exceeded.antigravity-credits: %t -> %t", oldCfg.QuotaExceeded.AntigravityCredits, newCfg.QuotaExceeded.AntigravityCredits))
-	}
-	if !reflect.DeepEqual(oldCfg.Antigravity.SensitiveWords, newCfg.Antigravity.SensitiveWords) {
-		changes = append(changes, fmt.Sprintf("antigravity.sensitive-words: %d -> %d", len(oldCfg.Antigravity.SensitiveWords), len(newCfg.Antigravity.SensitiveWords)))
-	}
-	if !equalStringMap(oldCfg.Antigravity.SensitiveWordsReplace, newCfg.Antigravity.SensitiveWordsReplace) {
-		changes = append(changes, fmt.Sprintf("antigravity.sensitive-words-replace: %d -> %d", len(oldCfg.Antigravity.SensitiveWordsReplace), len(newCfg.Antigravity.SensitiveWordsReplace)))
-	}
-	if !equalSensitivePatternRules(oldCfg.Antigravity.SensitivePatternsReplace, newCfg.Antigravity.SensitivePatternsReplace) {
-		changes = append(changes, fmt.Sprintf("antigravity.sensitive-patterns-replace: %d -> %d", len(oldCfg.Antigravity.SensitivePatternsReplace), len(newCfg.Antigravity.SensitivePatternsReplace)))
-	}
 	if !reflect.DeepEqual(oldCfg.Devin.SensitiveWords, newCfg.Devin.SensitiveWords) {
 		changes = append(changes, fmt.Sprintf("devin.sensitive-words: %d -> %d", len(oldCfg.Devin.SensitiveWords), len(newCfg.Devin.SensitiveWords)))
 	}

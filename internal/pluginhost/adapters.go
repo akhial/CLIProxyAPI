@@ -302,6 +302,9 @@ func (h *Host) RegisterModels(ctx context.Context, modelRegistry modelRegistry) 
 				model.ID = strings.TrimSpace(model.ID)
 				models = append(models, model)
 			}
+			if provider == "antigravity" {
+				models = registry.NativeAntigravityModels(models)
+			}
 			if len(models) == 0 {
 				continue
 			}
@@ -446,6 +449,9 @@ func (h *Host) ModelsForAuth(ctx context.Context, auth *coreauth.Auth) AuthModel
 			if model != nil && model.ID != "" {
 				models = append(models, model)
 			}
+		}
+		if respProvider == "antigravity" {
+			models = registry.NativeAntigravityModels(models)
 		}
 		path := ""
 		if auth.Attributes != nil {

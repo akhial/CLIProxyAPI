@@ -48,7 +48,7 @@ func task6ProviderFixture(provider, mode, toolName string) string {
 			start += "data: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":3}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
 		}
 		return start
-	case "gemini", "vertex", "antigravity":
+	case "gemini", "vertex":
 		args = `{"input":7,"secret":"RAW_SECRET"}`
 		if mode == "eof" {
 			args = `{"input":"unfinished"}`
@@ -58,9 +58,6 @@ func task6ProviderFixture(provider, mode, toolName string) string {
 			finish = ""
 		}
 		body := fmt.Sprintf(`{"responseId":"r","candidates":[{"content":{"parts":[{"functionCall":{"name":"apply_patch","args":%s}}]}%s}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3}}`, args, finish)
-		if provider == "antigravity" {
-			body = `{"response":` + body + `}`
-		}
 		if mode != "nonstream" {
 			return "data: " + body + "\n\n"
 		}
@@ -97,8 +94,6 @@ func task6Executor(provider string) cliproxyauth.ProviderExecutor {
 		return NewGeminiInteractionsExecutor(cfg)
 	case "vertex":
 		return NewGeminiVertexExecutor(cfg)
-	case "antigravity":
-		return NewAntigravityExecutor(cfg)
 	case "kimi-chat":
 		return NewKimiExecutor(cfg)
 	default:
@@ -137,7 +132,7 @@ func assertTask6FailedStream(t *testing.T, chunks <-chan cliproxyexecutor.Stream
 }
 
 func TestApplyPatchActualProviderErrorAndEOF(t *testing.T) {
-	for _, provider := range []string{"custom-compat", "claude", "claude-oauth", "gemini", "gemini-interactions", "vertex", "antigravity", "kimi-chat"} {
+	for _, provider := range []string{"custom-compat", "claude", "claude-oauth", "gemini", "gemini-interactions", "vertex", "kimi-chat"} {
 		for _, mode := range []string{"nonstream", "stream", "eof", "empty", "scanner"} {
 			t.Run(provider+"/"+mode, func(t *testing.T) {
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -172,9 +167,6 @@ func TestApplyPatchActualProviderErrorAndEOF(t *testing.T) {
 				if provider == "claude-oauth" {
 					auth.Attributes["api_key"] = "sk-ant-oat-test"
 					auth.Metadata = map[string]any{"account_uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
-				}
-				if provider == "antigravity" {
-					auth.Metadata = map[string]any{"access_token": "test", "expires_in": 3600, "timestamp": "2099-01-01T00:00:00Z", "project_id": "test"}
 				}
 				checkUsage := task6CaptureFailureUsage(t, auth.ID)
 				defer checkUsage()
@@ -436,7 +428,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"function_call"
 }
 
 func TestApplyPatchHTTPGatewayErrorMatrix(t *testing.T) {
-	for _, provider := range []string{"custom-compat", "claude", "claude-oauth", "gemini", "gemini-interactions", "vertex", "antigravity", "devin", "xai", "meta", "kimi"} {
+	for _, provider := range []string{"custom-compat", "claude", "claude-oauth", "gemini", "gemini-interactions", "vertex", "devin", "xai", "meta", "kimi"} {
 		for _, mode := range []string{"nonstream", "stream", "eof"} {
 			t.Run(provider+"/"+mode, func(t *testing.T) {
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -496,9 +488,6 @@ func TestApplyPatchHTTPGatewayErrorMatrix(t *testing.T) {
 				if provider == "claude-oauth" {
 					auth.Attributes["api_key"] = "sk-ant-oat-test"
 					auth.Metadata = map[string]any{"account_uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
-				}
-				if provider == "antigravity" {
-					auth.Metadata = map[string]any{"access_token": "test", "expires_in": 3600, "timestamp": "2099-01-01T00:00:00Z", "project_id": "test"}
 				}
 				checkUsage := task6CaptureFailureUsage(t, auth.ID)
 				defer checkUsage()

@@ -93,6 +93,17 @@ func GetAntigravityModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Antigravity)
 }
 
+// NativeAntigravityModels selects routable upstream IDs before public aliases are applied.
+func NativeAntigravityModels(models []*ModelInfo) []*ModelInfo {
+	var native []*ModelInfo
+	for _, model := range models {
+		if model != nil && strings.HasPrefix(model.ID, "gemini-") {
+			native = append(native, model)
+		}
+	}
+	return native
+}
+
 var staticDevinModels = []*ModelInfo{
 	devinBuiltinSWE16SlowModelInfo(),
 	{

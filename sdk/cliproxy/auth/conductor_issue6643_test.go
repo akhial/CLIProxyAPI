@@ -294,7 +294,7 @@ func TestManager_Issue6643_InFlightSuccessesKeepFreshQuotaCooldown(t *testing.T)
 	results := make(chan issue6643Result, issue6643ConcurrentRequests)
 	for i := 0; i < issue6643ConcurrentRequests; i++ {
 		go func() {
-			_, errExecute := manager.Execute(execCtx, []string{"antigravity"}, cliproxyexecutor.Request{Model: model, Payload: []byte("ping")}, cliproxyexecutor.Options{})
+			_, errExecute := manager.Execute(execCtx, []string{"antigravity"}, cliproxyexecutor.Request{Model: model, Payload: []byte("ping")}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 			results <- issue6643Result{err: errExecute}
 		}()
 	}

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
@@ -36,11 +37,13 @@ const (
 	AntigravityProbeStatusTransientError
 )
 
-// AntigravityModelCapabilityHints holds normalized per-account model IDs and web-search capability IDs.
+// AntigravityModelCapabilityHints holds normalized per-account model IDs, model enums, and web-search capability IDs.
 type AntigravityModelCapabilityHints struct {
 	WebSearchModelIDs map[string]struct{}
 	// Nil means unknown; an empty non-nil set is an authoritative empty catalog.
 	ModelIDs map[string]struct{}
+	// ModelEnums maps normalized model IDs to their upstream enum names (e.g. MODEL_PLACEHOLDER_M36).
+	ModelEnums map[string]string
 }
 
 // Clone returns a deep copy of the capability hints.
@@ -48,6 +51,7 @@ func (h AntigravityModelCapabilityHints) Clone() AntigravityModelCapabilityHints
 	return AntigravityModelCapabilityHints{
 		WebSearchModelIDs: maps.Clone(h.WebSearchModelIDs),
 		ModelIDs:          maps.Clone(h.ModelIDs),
+		ModelEnums:        maps.Clone(h.ModelEnums),
 	}
 }
 
@@ -103,7 +107,7 @@ func FetchAntigravityAvailableModels(ctx context.Context, req AntigravityModelPr
 	}
 	userAgent := strings.TrimSpace(req.UserAgent)
 	if userAgent == "" {
-		userAgent = AntigravityUserAgent()
+		userAgent = misc.AntigravityGatewayUserAgent
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+accessToken)
@@ -189,6 +193,7 @@ func ParseAntigravityModelCapabilityHints(body []byte) (AntigravityModelCapabili
 
 	modelsResult := top.Get("models")
 	var modelIDs map[string]struct{}
+	var modelEnums map[string]string
 	if modelsResult.Exists() && modelsResult.Type != ojson.Null {
 		if !modelsResult.IsObject() {
 			return AntigravityModelCapabilityHints{}, false
@@ -198,9 +203,18 @@ func ParseAntigravityModelCapabilityHints(body []byte) (AntigravityModelCapabili
 			return AntigravityModelCapabilityHints{}, false
 		}
 		modelIDs = make(map[string]struct{}, len(modelMap))
-		for id := range modelMap {
+		for id, details := range modelMap {
 			if normalized := NormalizeAntigravityModelID(id); normalized != "" {
 				modelIDs[normalized] = struct{}{}
+				if details.IsObject() {
+					modelEnum := strings.TrimSpace(details.Get("model").String())
+					if modelEnum != "" && len(modelEnum) <= antigravityMaxModelIDBytes {
+						if modelEnums == nil {
+							modelEnums = make(map[string]string)
+						}
+						modelEnums[normalized] = strings.Clone(modelEnum)
+					}
+				}
 			}
 		}
 	}
@@ -208,6 +222,7 @@ func ParseAntigravityModelCapabilityHints(body []byte) (AntigravityModelCapabili
 	return AntigravityModelCapabilityHints{
 		WebSearchModelIDs: webSearchModels,
 		ModelIDs:          modelIDs,
+		ModelEnums:        modelEnums,
 	}, true
 }
 
@@ -253,6 +268,19 @@ func BuildPersistedAntigravityCapabilityHints(project, endpoint string, hints An
 			value["web_search_model_ids"] = webSearchItems
 		}
 	}
+	if len(hints.ModelEnums) > 0 {
+		enumMap := make(map[string]any, len(hints.ModelEnums))
+		for id, modelEnum := range hints.ModelEnums {
+			normalized := NormalizeAntigravityModelID(id)
+			trimmedEnum := strings.TrimSpace(modelEnum)
+			if normalized != "" && trimmedEnum != "" && len(trimmedEnum) <= antigravityMaxModelIDBytes {
+				enumMap[normalized] = trimmedEnum
+			}
+		}
+		if len(enumMap) > 0 {
+			value["model_enums"] = enumMap
+		}
+	}
 	return value
 }
 
@@ -293,10 +321,76 @@ func ParsePersistedAntigravityCapabilityHints(metadata map[string]any, expectedP
 		}
 		webSearchModels = parsedWebSearch
 	}
+	var modelEnums map[string]string
+	if rawEnums, hasEnums := rawMap["model_enums"]; hasEnums && rawEnums != nil {
+		parsedEnums, okEnums := parsePersistedAntigravityModelEnums(rawEnums)
+		if !okEnums {
+			return AntigravityModelCapabilityHints{}, false
+		}
+		modelEnums = parsedEnums
+	}
 	return AntigravityModelCapabilityHints{
 		ModelIDs:          modelIDs,
 		WebSearchModelIDs: webSearchModels,
+		ModelEnums:        modelEnums,
 	}, true
+}
+
+// LookupPersistedAntigravityModelEnum returns the persisted upstream model enum name
+// (e.g. MODEL_PLACEHOLDER_M36) for modelID from auth metadata, or empty if unavailable.
+func LookupPersistedAntigravityModelEnum(metadata map[string]any, modelID string) string {
+	normalized := NormalizeAntigravityModelID(modelID)
+	if normalized == "" || metadata == nil {
+		return ""
+	}
+	raw, ok := metadata[AntigravityPersistedHintsMetaKey]
+	if !ok || raw == nil {
+		return ""
+	}
+	rawMap, ok := raw.(map[string]any)
+	if !ok {
+		return ""
+	}
+	rawEnums, ok := rawMap["model_enums"]
+	if !ok || rawEnums == nil {
+		return ""
+	}
+	enums, ok := parsePersistedAntigravityModelEnums(rawEnums)
+	if !ok {
+		return ""
+	}
+	return enums[normalized]
+}
+
+func parsePersistedAntigravityModelEnums(raw any) (map[string]string, bool) {
+	switch items := raw.(type) {
+	case map[string]any:
+		out := make(map[string]string, len(items))
+		for k, v := range items {
+			s, ok := v.(string)
+			if !ok {
+				return nil, false
+			}
+			normalized := NormalizeAntigravityModelID(k)
+			trimmed := strings.TrimSpace(s)
+			if normalized != "" && trimmed != "" && len(trimmed) <= antigravityMaxModelIDBytes {
+				out[normalized] = strings.Clone(trimmed)
+			}
+		}
+		return out, true
+	case map[string]string:
+		out := make(map[string]string, len(items))
+		for k, s := range items {
+			normalized := NormalizeAntigravityModelID(k)
+			trimmed := strings.TrimSpace(s)
+			if normalized != "" && trimmed != "" && len(trimmed) <= antigravityMaxModelIDBytes {
+				out[normalized] = strings.Clone(trimmed)
+			}
+		}
+		return out, true
+	default:
+		return nil, false
+	}
 }
 
 func parsePersistedAntigravityModelSet(raw any) (map[string]struct{}, bool) {

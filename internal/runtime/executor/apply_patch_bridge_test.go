@@ -71,12 +71,9 @@ func applyPatchTestFrames(protocol, name string) (string, string) {
 		return first, last
 	case "devin":
 		return string(task6DevinFrames(applyPatchTestPartial, false, "", name)), string(task6DevinFrames(applyPatchTestRemainder, false, `{}`, name))
-	case "gemini", "antigravity":
+	case "gemini":
 		first := `{"responseId":"r1","candidates":[{"content":{"parts":[{"text":"preparing"}]}}]}`
 		last := fmt.Sprintf(`{"responseId":"r1","candidates":[{"content":{"parts":[{"functionCall":{"name":%q,"args":%s}}]},"finishReason":"STOP"}]}`, name, args)
-		if protocol == "antigravity" {
-			first, last = `{"response":`+first+`}`, `{"response":`+last+`}`
-		}
 		return "data: " + first + "\n\n", "data: " + last + "\n\n"
 	default:
 		first := fmt.Sprintf("data: {\"id\":\"r1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":%q,\"arguments\":%q}}]}}]}\n\n", name, applyPatchTestPartial)
@@ -98,9 +95,6 @@ func applyPatchTestDeclaration(t *testing.T, protocol string, body []byte) {
 	case "gemini":
 		tool = ojson.GetBytes(body, "tools.0.functionDeclarations.0")
 		parameters = "parametersJsonSchema"
-	case "antigravity":
-		tool = ojson.GetBytes(body, "request.tools.0.functionDeclarations.0")
-		parameters = "parameters"
 	case "devin":
 		if len(body) < 5 {
 			t.Fatal("missing Connect envelope")
@@ -122,12 +116,7 @@ func applyPatchTestDeclaration(t *testing.T, protocol string, body []byte) {
 	if tool.Get(parameters+".properties.input.type").String() != "string" || tool.Get(parameters+".required.0").String() != "input" {
 		t.Fatalf("wrong standard input schema: %s", tool.Raw)
 	}
-	// Antigravity's existing schema sanitizer replaces additionalProperties with a description.
-	if protocol == "antigravity" {
-		if !strings.Contains(tool.Get(parameters+".description").String(), "No extra properties allowed") {
-			t.Fatalf("sanitized schema lost the strict contract: %s", tool.Raw)
-		}
-	} else if !tool.Get(parameters+".additionalProperties").Exists() || tool.Get(parameters+".additionalProperties").Bool() {
+	if !tool.Get(parameters+".additionalProperties").Exists() || tool.Get(parameters+".additionalProperties").Bool() {
 		t.Fatalf("schema permits extra properties: %s", tool.Raw)
 	}
 }
@@ -194,7 +183,7 @@ func TestApplyPatchBridgeLiveHTTPPreviewMatrix(t *testing.T) {
 		{"custom-compat", "chat", false}, {"claude", "claude", false}, {"claude-oauth", "claude", false},
 		{"gemini-interactions", "interactions", false}, {"devin", "devin", false},
 		{"xai", "responses", false}, {"meta", "responses", false}, {"kimi", "responses", false},
-		{"gemini", "gemini", true}, {"vertex", "gemini", true}, {"antigravity", "antigravity", true},
+		{"gemini", "gemini", true}, {"vertex", "gemini", true},
 	} {
 		t.Run(tc.provider, func(t *testing.T) {
 			release := make(chan struct{})
@@ -237,9 +226,6 @@ func TestApplyPatchBridgeLiveHTTPPreviewMatrix(t *testing.T) {
 			if tc.provider == "claude-oauth" {
 				auth.Attributes["api_key"] = "sk-ant-oat-test"
 				auth.Metadata = map[string]any{"account_uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
-			}
-			if tc.provider == "antigravity" {
-				auth.Metadata = map[string]any{"access_token": "test", "expires_in": 3600, "timestamp": "2099-01-01T00:00:00Z", "project_id": "test"}
 			}
 			gateway := newApplyPatchTestGateway(t, exec, auth)
 			// Catalog claims must be backed by the executor used by the POST below.

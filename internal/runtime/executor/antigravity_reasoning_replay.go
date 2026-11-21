@@ -488,11 +488,6 @@ func prepareAntigravityGeminiReasoningReplayPayloadDoc(ctx context.Context, mode
 	return prepareAntigravityGeminiReasoningReplayPayloadDocWithOptions(ctx, modelName, req, opts, doc, true, !isGeminiCountTokensAction(req, opts))
 }
 
-func prepareAntigravityGeminiCountTokensReasoningReplayPayloadDoc(ctx context.Context, modelName string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, doc *ojson.Doc) (bool, error) {
-	_, changed, err := prepareAntigravityGeminiReasoningReplayPayloadDocWithOptions(ctx, modelName, req, opts, doc, true, false)
-	return changed, err
-}
-
 func prepareAntigravityGeminiReasoningReplayPayloadDocWithOptions(ctx context.Context, modelName string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, doc *ojson.Doc, normalizeFunctionResponseRoles, reserveOnMiss bool) (antigravityReasoningReplayScope, bool, error) {
 	if doc == nil || !antigravityUsesReasoningReplayCache(modelName) {
 		return antigravityReasoningReplayScope{}, false, nil
@@ -3346,21 +3341,6 @@ func cacheAntigravityReasoningReplayFromResponse(ctx context.Context, scope anti
 		acc.terminal = true
 	}
 	acc.Commit(ctx)
-}
-
-func applyAntigravityNativeSignatureReplayIfNeeded(modelName string, payload []byte) []byte {
-	if antigravityUsesReasoningReplayCache(modelName) {
-		return payload
-	}
-	// Native per-part signature replay is not on upstream/dev; Gemini uses HOME replay only.
-	return payload
-}
-
-func applyAntigravityNativeSignatureReplayIfNeededDoc(modelName string, doc *ojson.Doc) {
-	if doc == nil || antigravityUsesReasoningReplayCache(modelName) {
-		return
-	}
-	// Native per-part signature replay is not on upstream/dev; Gemini uses HOME replay only.
 }
 
 func antigravityUsesReasoningReplayCache(modelName string) bool {

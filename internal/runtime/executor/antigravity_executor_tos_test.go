@@ -83,8 +83,8 @@ func TestAntigravityTOSStatusErrTerminal(t *testing.T) {
 }
 
 func TestAntigravityTOSPoolPause(t *testing.T) {
-	resetAntigravityCreditsRetryState()
-	t.Cleanup(resetAntigravityCreditsRetryState)
+	resetAntigravityCooldownState()
+	t.Cleanup(resetAntigravityCooldownState)
 
 	auth := &cliproxyauth.Auth{ID: "tos-auth", Provider: "antigravity"}
 	other := &cliproxyauth.Auth{ID: "sibling-auth", Provider: "antigravity"}
@@ -127,14 +127,14 @@ func TestAntigravityTOSPoolPause(t *testing.T) {
 }
 
 func TestAntigravityTOSPauseWindowConfigurable(t *testing.T) {
-	resetAntigravityCreditsRetryState()
-	t.Cleanup(resetAntigravityCreditsRetryState)
+	resetAntigravityCooldownState()
+	t.Cleanup(resetAntigravityCooldownState)
 
 	auth := &cliproxyauth.Auth{ID: "tos-auth", Provider: "antigravity"}
 
 	// Unset, disabled, zero, negative, and invalid windows must not pause the pool.
 	for _, raw := range []string{"", "0", "off", "false", "none", "disabled", "0s", "-1m", "invalid"} {
-		resetAntigravityCreditsRetryState()
+		resetAntigravityCooldownState()
 		cfg := &config.Config{}
 		cfg.Antigravity.TOSPauseWindow = raw
 		markAntigravityTOSPause(cfg, auth)
@@ -164,13 +164,13 @@ func TestAntigravityTOSErrorCarriesTerminalMarker(t *testing.T) {
 	}
 }
 
-// TestAntigravityClaudeNonStream_SSEErrorFrameIsTerminal verifies that a TOS
+// TestAntigravityAggregatedStream_SSEErrorFrameIsTerminal verifies that a TOS
 // error frame arriving inside an HTTP 200 SSE stream is surfaced as the
 // terminal tos_violation error (so the credential is deactivated), not
 // swallowed by the aggregation loop into a generic empty-output failure.
-func TestAntigravityClaudeNonStream_SSEErrorFrameIsTerminal(t *testing.T) {
-	resetAntigravityCreditsRetryState()
-	t.Cleanup(resetAntigravityCreditsRetryState)
+func TestAntigravityAggregatedStream_SSEErrorFrameIsTerminal(t *testing.T) {
+	resetAntigravityCooldownState()
+	t.Cleanup(resetAntigravityCooldownState)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -193,12 +193,12 @@ func TestAntigravityClaudeNonStream_SSEErrorFrameIsTerminal(t *testing.T) {
 		},
 	}
 
-	_, err := exec.executeClaudeNonStream(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "claude-sonnet-4-6",
-		Payload: []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`),
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity})
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gemini-3-pro",
+		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini})
 	if err == nil {
-		t.Fatal("executeClaudeNonStream() = nil, want terminal TOS error")
+		t.Fatal("Execute() = nil, want terminal TOS error")
 	}
 	sErr, ok := err.(statusErr)
 	if !ok {
@@ -212,13 +212,13 @@ func TestAntigravityClaudeNonStream_SSEErrorFrameIsTerminal(t *testing.T) {
 	}
 }
 
-// TestAntigravityClaudeNonStream_MultiLineSSEErrorIsTerminal verifies that a
+// TestAntigravityAggregatedStream_MultiLineSSEErrorIsTerminal verifies that a
 // TOS error event split across multiple SSE data: lines is reassembled and
 // surfaced as a terminal error rather than being dropped by line-by-line
 // classification.
-func TestAntigravityClaudeNonStream_MultiLineSSEErrorIsTerminal(t *testing.T) {
-	resetAntigravityCreditsRetryState()
-	t.Cleanup(resetAntigravityCreditsRetryState)
+func TestAntigravityAggregatedStream_MultiLineSSEErrorIsTerminal(t *testing.T) {
+	resetAntigravityCooldownState()
+	t.Cleanup(resetAntigravityCooldownState)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -243,12 +243,12 @@ func TestAntigravityClaudeNonStream_MultiLineSSEErrorIsTerminal(t *testing.T) {
 			"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
 		},
 	}
-	_, err := exec.executeClaudeNonStream(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "claude-sonnet-4-6",
-		Payload: []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`),
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity})
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gemini-3-pro",
+		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini})
 	if err == nil {
-		t.Fatal("executeClaudeNonStream() = nil, want terminal TOS error for multi-line event")
+		t.Fatal("Execute() = nil, want terminal TOS error for multi-line event")
 	}
 	sErr, ok := err.(statusErr)
 	if !ok || !sErr.IsTerminalTOSViolation() {

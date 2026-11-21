@@ -10,6 +10,7 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 type forceMappingExecutor struct {
@@ -68,92 +69,6 @@ func (e *forceMappingExecutor) StreamModels() []string {
 	defer e.mu.Unlock()
 	out := make([]string, len(e.streamModels))
 	copy(out, e.streamModels)
-	return out
-}
-
-type forceMappingCreditsFallbackExecutor struct {
-	id string
-
-	mu                      sync.Mutex
-	executeModels           []string
-	executeCreditsRequested []bool
-	streamModels            []string
-	streamCreditsRequested  []bool
-}
-
-func (e *forceMappingCreditsFallbackExecutor) Identifier() string { return e.id }
-
-func (e *forceMappingCreditsFallbackExecutor) Execute(ctx context.Context, _ *Auth, req cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	creditsRequested := AntigravityCreditsRequested(ctx)
-	e.mu.Lock()
-	e.executeModels = append(e.executeModels, req.Model)
-	e.executeCreditsRequested = append(e.executeCreditsRequested, creditsRequested)
-	e.mu.Unlock()
-	if !creditsRequested {
-		return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "MODEL_CAPACITY_EXHAUSTED"}
-	}
-	payload := `{"model":"` + req.Model + `","message":{"model":"` + req.Model + `"}}`
-	return cliproxyexecutor.Response{Payload: []byte(payload)}, nil
-}
-
-func (e *forceMappingCreditsFallbackExecutor) ExecuteStream(ctx context.Context, _ *Auth, req cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	creditsRequested := AntigravityCreditsRequested(ctx)
-	e.mu.Lock()
-	e.streamModels = append(e.streamModels, req.Model)
-	e.streamCreditsRequested = append(e.streamCreditsRequested, creditsRequested)
-	e.mu.Unlock()
-	ch := make(chan cliproxyexecutor.StreamChunk, 1)
-	if !creditsRequested {
-		ch <- cliproxyexecutor.StreamChunk{Err: &Error{HTTPStatus: http.StatusServiceUnavailable, Message: "MODEL_CAPACITY_EXHAUSTED"}}
-		close(ch)
-		return &cliproxyexecutor.StreamResult{Chunks: ch}, nil
-	}
-	ch <- cliproxyexecutor.StreamChunk{Payload: []byte(`data: {"message":{"model":"` + req.Model + `"}}` + "\n\n")}
-	close(ch)
-	return &cliproxyexecutor.StreamResult{Chunks: ch}, nil
-}
-
-func (e *forceMappingCreditsFallbackExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {
-	return auth, nil
-}
-
-func (e *forceMappingCreditsFallbackExecutor) CountTokens(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusNotImplemented, Message: "CountTokens not implemented"}
-}
-
-func (e *forceMappingCreditsFallbackExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
-	return nil, &Error{HTTPStatus: http.StatusNotImplemented, Message: "HttpRequest not implemented"}
-}
-
-func (e *forceMappingCreditsFallbackExecutor) ExecuteModels() []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	out := make([]string, len(e.executeModels))
-	copy(out, e.executeModels)
-	return out
-}
-
-func (e *forceMappingCreditsFallbackExecutor) ExecuteCreditsRequested() []bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	out := make([]bool, len(e.executeCreditsRequested))
-	copy(out, e.executeCreditsRequested)
-	return out
-}
-
-func (e *forceMappingCreditsFallbackExecutor) StreamModels() []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	out := make([]string, len(e.streamModels))
-	copy(out, e.streamModels)
-	return out
-}
-
-func (e *forceMappingCreditsFallbackExecutor) StreamCreditsRequested() []bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	out := make([]bool, len(e.streamCreditsRequested))
-	copy(out, e.streamCreditsRequested)
 	return out
 }
 
@@ -254,44 +169,6 @@ func setupForceMappingManager(t *testing.T, provider, upstreamModel, aliasModel 
 	return manager, executor
 }
 
-func setupForceMappingCreditsFallbackManager(t *testing.T, upstreamModel, aliasModel string) (*Manager, *forceMappingCreditsFallbackExecutor) {
-	t.Helper()
-	const provider = "antigravity"
-	manager := NewManager(nil, nil, nil)
-	manager.SetConfig(&internalconfig.Config{
-		QuotaExceeded: internalconfig.QuotaExceeded{AntigravityCredits: true},
-	})
-	manager.SetRetryConfig(0, 0, 1)
-	executor := &forceMappingCreditsFallbackExecutor{id: provider}
-	manager.RegisterExecutor(executor)
-	manager.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
-		provider: {{
-			Name:         upstreamModel,
-			Alias:        aliasModel,
-			Fork:         true,
-			ForceMapping: true,
-		}},
-	})
-
-	auth := &Auth{
-		ID:       provider + "-force-mapping-credits-auth",
-		Provider: provider,
-		Status:   StatusActive,
-	}
-	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
-		t.Fatalf("register auth: %v", errRegister)
-	}
-
-	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(auth.ID, provider, []*registry.ModelInfo{{ID: aliasModel}, {ID: upstreamModel}})
-	t.Cleanup(func() {
-		reg.UnregisterClient(auth.ID)
-	})
-	manager.RefreshSchedulerEntry(auth.ID)
-
-	return manager, executor
-}
-
 func TestManagerExecute_OAuthAliasForceMappingRewritesNonStreamResponse(t *testing.T) {
 	const (
 		provider      = "antigravity"
@@ -300,7 +177,7 @@ func TestManagerExecute_OAuthAliasForceMappingRewritesNonStreamResponse(t *testi
 	)
 
 	manager, executor := setupForceMappingManager(t, provider, upstreamModel, aliasModel)
-	resp, errExecute := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: aliasModel}, cliproxyexecutor.Options{})
+	resp, errExecute := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: aliasModel}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 	if errExecute != nil {
 		t.Fatalf("execute error = %v, want success", errExecute)
 	}
@@ -322,7 +199,7 @@ func TestManagerExecuteStream_OAuthAliasForceMappingRewritesStreamResponse(t *te
 	)
 
 	manager, executor := setupForceMappingManager(t, provider, upstreamModel, aliasModel)
-	streamResult, errExecute := manager.ExecuteStream(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: aliasModel}, cliproxyexecutor.Options{})
+	streamResult, errExecute := manager.ExecuteStream(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: aliasModel}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 	if errExecute != nil {
 		t.Fatalf("execute stream error = %v, want success", errExecute)
 	}
@@ -438,16 +315,17 @@ func TestManagerExecute_LiveDerivedForceMapping_AllProviders(t *testing.T) {
 		provider      string
 		upstreamModel string
 		aliasModel    string
+		sourceFormat  sdktranslator.Format
 	}{
 		{provider: "codex", upstreamModel: "gpt-5.4", aliasModel: "gpt-5.4-fast"},
-		{provider: "antigravity", upstreamModel: "gemini-3-flash", aliasModel: "claude-haiku-4-5-20251001"},
+		{provider: "antigravity", upstreamModel: "gemini-3-flash", aliasModel: "fast", sourceFormat: sdktranslator.FormatGemini},
 		{provider: "kimi", upstreamModel: "kimi-k2.5", aliasModel: "k2.5"},
 		{provider: "xai", upstreamModel: "grok-4.3", aliasModel: "grok-latest"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.provider, func(t *testing.T) {
 			manager, executor := setupForceMappingManager(t, tc.provider, tc.upstreamModel, tc.aliasModel)
-			resp, errExecute := manager.Execute(context.Background(), []string{tc.provider}, cliproxyexecutor.Request{Model: tc.aliasModel}, cliproxyexecutor.Options{})
+			resp, errExecute := manager.Execute(context.Background(), []string{tc.provider}, cliproxyexecutor.Request{Model: tc.aliasModel}, cliproxyexecutor.Options{SourceFormat: tc.sourceFormat})
 			if errExecute != nil {
 				t.Fatalf("execute error = %v", errExecute)
 			}
@@ -467,16 +345,17 @@ func TestManagerExecuteStream_LiveDerivedForceMapping_AllProviders(t *testing.T)
 		provider      string
 		upstreamModel string
 		aliasModel    string
+		sourceFormat  sdktranslator.Format
 	}{
 		{provider: "codex", upstreamModel: "gpt-5.4", aliasModel: "gpt-5.4-fast"},
-		{provider: "antigravity", upstreamModel: "gemini-3-flash", aliasModel: "claude-haiku-4-5-20251001"},
+		{provider: "antigravity", upstreamModel: "gemini-3-flash", aliasModel: "fast", sourceFormat: sdktranslator.FormatGemini},
 		{provider: "kimi", upstreamModel: "kimi-k2.5", aliasModel: "k2.5"},
 		{provider: "xai", upstreamModel: "grok-4.3", aliasModel: "grok-latest"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.provider, func(t *testing.T) {
 			manager, executor := setupForceMappingManager(t, tc.provider, tc.upstreamModel, tc.aliasModel)
-			streamResult, errExecute := manager.ExecuteStream(context.Background(), []string{tc.provider}, cliproxyexecutor.Request{Model: tc.aliasModel}, cliproxyexecutor.Options{})
+			streamResult, errExecute := manager.ExecuteStream(context.Background(), []string{tc.provider}, cliproxyexecutor.Request{Model: tc.aliasModel}, cliproxyexecutor.Options{SourceFormat: tc.sourceFormat})
 			if errExecute != nil {
 				t.Fatalf("execute stream error = %v", errExecute)
 			}
@@ -498,59 +377,6 @@ func TestManagerExecuteStream_LiveDerivedForceMapping_AllProviders(t *testing.T)
 				t.Fatalf("stream payload leaked upstream %q: %s", tc.upstreamModel, got)
 			}
 		})
-	}
-}
-
-func TestManagerExecute_AntigravityCreditsFallbackForceMappingRewritesResponse(t *testing.T) {
-	const (
-		upstreamModel = "gemini-3-flash-preview"
-		aliasModel    = "claude-haiku-4-5-20251001"
-	)
-
-	manager, executor := setupForceMappingCreditsFallbackManager(t, upstreamModel, aliasModel)
-	resp, errExecute := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: aliasModel}, cliproxyexecutor.Options{})
-	if errExecute != nil {
-		t.Fatalf("execute error = %v, want success", errExecute)
-	}
-
-	if got := executor.ExecuteModels(); len(got) != 2 || got[0] != upstreamModel || got[1] != upstreamModel {
-		t.Fatalf("execute models = %v, want [%s %s]", got, upstreamModel, upstreamModel)
-	}
-	if got := executor.ExecuteCreditsRequested(); len(got) != 2 || got[0] || !got[1] {
-		t.Fatalf("credits flags = %v, want [false true]", got)
-	}
-	if got := string(resp.Payload); !strings.Contains(got, aliasModel) || forceMappingPayloadLeaksUpstream(got, upstreamModel) {
-		t.Fatalf("response payload = %s, want alias %q without upstream %q", got, aliasModel, upstreamModel)
-	}
-}
-
-func TestManagerExecuteStream_AntigravityCreditsFallbackForceMappingRewritesResponse(t *testing.T) {
-	const (
-		upstreamModel = "gemini-3-flash-preview"
-		aliasModel    = "claude-haiku-4-5-20251001"
-	)
-
-	manager, executor := setupForceMappingCreditsFallbackManager(t, upstreamModel, aliasModel)
-	streamResult, errExecute := manager.ExecuteStream(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: aliasModel}, cliproxyexecutor.Options{})
-	if errExecute != nil {
-		t.Fatalf("execute stream error = %v, want success", errExecute)
-	}
-
-	if got := executor.StreamModels(); len(got) != 2 || got[0] != upstreamModel || got[1] != upstreamModel {
-		t.Fatalf("stream models = %v, want [%s %s]", got, upstreamModel, upstreamModel)
-	}
-	if got := executor.StreamCreditsRequested(); len(got) != 2 || got[0] || !got[1] {
-		t.Fatalf("credits flags = %v, want [false true]", got)
-	}
-	var payload []byte
-	for chunk := range streamResult.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("unexpected stream error: %v", chunk.Err)
-		}
-		payload = append(payload, chunk.Payload...)
-	}
-	if got := string(payload); !strings.Contains(got, aliasModel) || forceMappingPayloadLeaksUpstream(got, upstreamModel) {
-		t.Fatalf("stream payload = %s, want alias %q without upstream %q", got, aliasModel, upstreamModel)
 	}
 }
 

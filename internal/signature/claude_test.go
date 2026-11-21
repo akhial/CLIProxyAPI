@@ -1,10 +1,10 @@
 package signature
 
 import (
-	"github.com/MoeForge/moego/base64"
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/base64"
 	"github.com/MoeForge/moego/ojson"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -743,20 +743,5 @@ func TestClaudeCAISSignature_CachePrefixSurvivesClaudeUpstreamSanitize(t *testin
 				t.Fatalf("signature = %q, want unprefixed %q", got, observedFable5Sample)
 			}
 		})
-	}
-}
-
-func TestCompatibleAntigravityClaudeThinkingSignature_RejectsClaudeCAIS(t *testing.T) {
-	if normalized, ok := CompatibleAntigravityClaudeThinkingSignature(observedFable5Sample); ok || normalized != "" {
-		t.Fatalf("CompatibleAntigravityClaudeThinkingSignature(ClaudeCAIS) = %q, %v; want empty and false", normalized, ok)
-	}
-	if normalized, ok := CompatibleAntigravityClaudeThinkingSignature("ccmax#" + observedFable5Sample); ok || normalized != "" {
-		t.Fatalf("CompatibleAntigravityClaudeThinkingSignature(ccmax#ClaudeCAIS) = %q, %v; want empty and false", normalized, ok)
-	}
-	if normalized, ok := CompatibleAntigravityClaudeThinkingSignature("cais#" + observedFable5Sample); ok || normalized != "" {
-		t.Fatalf("CompatibleAntigravityClaudeThinkingSignature(cais#ClaudeCAIS) = %q, %v; want empty and false", normalized, ok)
-	}
-	if normalized, ok := CompatibleAntigravityClaudeThinkingSignature("claude-cais#" + observedFable5Sample); ok || normalized != "" {
-		t.Fatalf("CompatibleAntigravityClaudeThinkingSignature(claude-cais#ClaudeCAIS) = %q, %v; want empty and false", normalized, ok)
 	}
 }

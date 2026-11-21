@@ -189,21 +189,21 @@ func TestHomeModelErrorOutranksLaterRefreshPreparationError(t *testing.T) {
 		{
 			name: "Execute",
 			run: func(manager *Manager) error {
-				_, errExecute := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{})
+				_, errExecute := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 				return errExecute
 			},
 		},
 		{
 			name: "Count",
 			run: func(manager *Manager) error {
-				_, errCount := manager.ExecuteCount(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{})
+				_, errCount := manager.ExecuteCount(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 				return errCount
 			},
 		},
 		{
 			name: "Stream",
 			run: func(manager *Manager) error {
-				_, errStream := manager.ExecuteStream(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{Stream: true})
+				_, errStream := manager.ExecuteStream(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{Stream: true, SourceFormat: "gemini"})
 				return errStream
 			},
 		},
@@ -241,21 +241,21 @@ func TestHomePrepareUsesEphemeralDispatchAuthAcrossExecutionPaths(t *testing.T) 
 		{
 			name: "Execute",
 			run: func(manager *Manager, ctx context.Context) error {
-				_, errExecute := manager.Execute(ctx, []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{})
+				_, errExecute := manager.Execute(ctx, []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 				return errExecute
 			},
 		},
 		{
 			name: "Count",
 			run: func(manager *Manager, ctx context.Context) error {
-				_, errCount := manager.ExecuteCount(ctx, []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{})
+				_, errCount := manager.ExecuteCount(ctx, []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 				return errCount
 			},
 		},
 		{
 			name: "Stream",
 			run: func(manager *Manager, ctx context.Context) error {
-				result, errStream := manager.ExecuteStream(ctx, []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{Stream: true})
+				result, errStream := manager.ExecuteStream(ctx, []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{Stream: true, SourceFormat: "gemini"})
 				if errStream != nil {
 					return errStream
 				}
@@ -311,21 +311,21 @@ func TestHomeExecutionResultsDoNotMutateSameIDLocalAuth(t *testing.T) {
 		{
 			name: "Execute",
 			run: func(manager *Manager, ctx context.Context) error {
-				_, errExecute := manager.Execute(ctx, []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{})
+				_, errExecute := manager.Execute(ctx, []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 				return errExecute
 			},
 		},
 		{
 			name: "Count",
 			run: func(manager *Manager, ctx context.Context) error {
-				_, errCount := manager.ExecuteCount(ctx, []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{})
+				_, errCount := manager.ExecuteCount(ctx, []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 				return errCount
 			},
 		},
 		{
 			name: "Stream",
 			run: func(manager *Manager, ctx context.Context) error {
-				result, errStream := manager.ExecuteStream(ctx, []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{Stream: true})
+				result, errStream := manager.ExecuteStream(ctx, []string{"antigravity"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{Stream: true, SourceFormat: "gemini"})
 				if errStream != nil {
 					return errStream
 				}
@@ -451,7 +451,7 @@ func TestManagerExecute_PreparesAndPersistsMissingRequestAuthMetadata(t *testing
 	registry.GetGlobalRegistry().RegisterClient(auth.ID, "antigravity", []*registry.ModelInfo{{ID: model}})
 	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
 
-	resp, errExecute := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	resp, errExecute := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 	if errExecute != nil {
 		t.Fatalf("Execute error: %v", errExecute)
 	}
@@ -475,7 +475,7 @@ func TestManagerExecute_PreparesAndPersistsMissingRequestAuthMetadata(t *testing
 		t.Fatalf("manager project_id = %q, want prepared-project", got)
 	}
 
-	if _, errExecute = manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{}); errExecute != nil {
+	if _, errExecute = manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{SourceFormat: "gemini"}); errExecute != nil {
 		t.Fatalf("second Execute error: %v", errExecute)
 	}
 	if got := executor.prepareCalls.Load(); got != 1 {
@@ -507,7 +507,7 @@ func TestManagerExecute_PrepareAuth403TriggersCooldown(t *testing.T) {
 	registry.GetGlobalRegistry().RegisterClient(auth.ID, "antigravity", []*registry.ModelInfo{{ID: model}})
 	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
 
-	_, errExecute := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	_, errExecute := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 	if errExecute == nil {
 		t.Fatal("expected Execute error on 403 prepare failure")
 	}

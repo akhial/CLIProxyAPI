@@ -1011,3 +1011,15 @@ func TestAntigravityConcurrentAuthUpdatePreservesBothNewTokenAndPersistedHints(t
 		t.Fatalf("expected version 2 hints to survive preemption and stale-snapshot Update, got %v", loadedHints.ModelIDs)
 	}
 }
+
+func TestNativeGeminiDiscoveryUsesAccountCatalogAndExclusions(t *testing.T) {
+	const newModel = "gemini-future-fixture"
+	auth := &coreauth.Auth{Provider: "antigravity", Attributes: map[string]string{"excluded_models": "gemini-excluded-fixture"}}
+	hints := antigravityModelCapabilityHints{ModelIDs: map[string]struct{}{newModel: {}, "gemini-excluded-fixture": {}, "internal-fixture": {}}}
+	cfg := &config.Config{}
+	service := &Service{}
+	got := service.antigravityModelsForHintsWithConfig(auth, hints, cfg)
+	if len(got) != 1 || got[0].ID != newModel {
+		t.Fatalf("unexpected native catalog %v", got)
+	}
+}

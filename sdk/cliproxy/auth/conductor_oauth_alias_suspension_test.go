@@ -66,8 +66,8 @@ func (e *aliasRoutingExecutor) ExecuteAliases() []string {
 func TestManagerExecute_OAuthAliasBypassesBlockedRouteModel(t *testing.T) {
 	const (
 		provider    = "antigravity"
-		routeModel  = "claude-opus-4-6"
-		targetModel = "claude-opus-4-6-thinking"
+		routeModel  = "gemini-pro-alias"
+		targetModel = "gemini-3.1-pro"
 	)
 
 	manager := NewManager(nil, nil, nil)
@@ -104,7 +104,7 @@ func TestManagerExecute_OAuthAliasBypassesBlockedRouteModel(t *testing.T) {
 	})
 	manager.RefreshSchedulerEntry(auth.ID)
 
-	resp, errExecute := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{})
+	resp, errExecute := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: routeModel}, cliproxyexecutor.Options{SourceFormat: "gemini"})
 	if errExecute != nil {
 		t.Fatalf("execute error = %v, want success", errExecute)
 	}

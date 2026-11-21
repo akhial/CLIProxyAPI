@@ -52,7 +52,11 @@ func DerivedAntigravitySessionID(metadataSets ...map[string]any) string {
 	if derivedID == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte("cli-proxy-api:antigravity:derived-session\x00" + derivedID))
+	return antigravitySessionID(derivedID)
+}
+
+func antigravitySessionID(identity string) string {
+	sum := sha256.Sum256([]byte("cli-proxy-api:antigravity:derived-session\x00" + identity))
 	value := int64(binary.BigEndian.Uint64(sum[:8])) & 0x7FFFFFFFFFFFFFFF
 	return "-" + strconv.FormatInt(value, 10)
 }

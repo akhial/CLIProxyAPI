@@ -225,7 +225,6 @@ func TestDefaultTokenCountTranslatorPairs(t *testing.T) {
 		{"codex-to-gemini", sdktranslator.FormatCodex, sdktranslator.FormatGemini, `{"response":{"usage":{"input_tokens":13,"total_tokens":13}}}`, `{"totalTokens":13,"promptTokensDetails":[{"modality":"TEXT","tokenCount":13}]}`},
 		{"claude-to-gemini", sdktranslator.FormatClaude, sdktranslator.FormatGemini, `{"input_tokens":13}`, `{"totalTokens":13,"promptTokensDetails":[{"modality":"TEXT","tokenCount":13}]}`},
 		{"gemini-to-gemini", sdktranslator.FormatGemini, sdktranslator.FormatGemini, `{"totalTokens":13,"usageMetadata":{"promptTokenCount":13}}`, `{"totalTokens":13,"promptTokensDetails":[{"modality":"TEXT","tokenCount":13}]}`},
-		{"antigravity-to-claude", sdktranslator.FormatAntigravity, sdktranslator.FormatClaude, `{"totalTokens":13}`, `{"input_tokens":13}`},
 		{"antigravity-to-gemini", sdktranslator.FormatAntigravity, sdktranslator.FormatGemini, `{"totalTokens":13}`, `{"totalTokens":13,"promptTokensDetails":[{"modality":"TEXT","tokenCount":13}]}`},
 	}
 	for _, tc := range cases {

@@ -1,0 +1,9 @@
+# Antigravity ACP tools in T3 Code
+
+This profile selects the ten built-in tools observed in the macOS OAuth session with Antigravity ACP 1.5.12. The official agent creates the declarations and executes the calls, including `generate_image`. T3 can also attach MCP tools and resource helpers, so the total varies by host. Selecting a custom main agent also changes its system instructions.
+
+1. Copy `acp-tools.md` into the workspace’s `.agents/agents/` directory. To share the profile across workspaces on a worker, place it in the T3 Antigravity provider’s Gemini home under `agents/acp-tools.md`. T3 passes that home to the agent with `--gemini-dir`.
+2. In the T3 Antigravity provider, set **Binary path** to the absolute path of the `agy` launcher in this example directory. In that provider’s environment, set `AGY_BINARY` to the absolute path of the official Antigravity executable. The launcher calls that executable and adds `--agent acp-tools` for API-key ACP sessions. T3 recognizes the executable names `agy` and `antigravity` on macOS and Linux.
+3. Choose **Gemini API key**, enter the worker’s CLIProxyAPI key, and set `GOOGLE_GEMINI_BASE_URL` in that provider’s environment to the gateway origin. Start a new session.
+
+API mode emits its own SDK headers and JSON Schema tool declarations. The gateway replaces SDK headers with the official Antigravity CLI/ACP `User-Agent` (and drops `X-Goog-Api-Client`), expands a recognized ACP single function-only tool group into one tool entry per declaration, and converts `parametersJsonSchema` into Cloud Code’s typed `parameters` schema format while preserving tool names, order, descriptions, and supported constraints. Ordinary sessions populate `cascade_id` and `root_cascade_id` matching the prompt’s conversation UUID, along with trajectory, step, model, and usage labels, OAuth-style `agent/...` request IDs, and `checkpoint` classification with shared session IDs for ACP title requests.

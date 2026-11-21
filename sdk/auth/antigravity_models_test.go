@@ -29,8 +29,8 @@ func TestNormalizeAntigravityModelID(t *testing.T) {
 }
 
 func TestParseAntigravityModelCapabilityHints(t *testing.T) {
-	t.Run("valid payload with models and web search", func(t *testing.T) {
-		body := []byte(`{"models":{"gemini-3-flash":{"displayName":"Gemini 3 Flash"},"claude-sonnet-5-5-medium":{"displayName":"Claude Sonnet 5.5"}},"webSearchModelIds":["gemini-3-flash"]}`)
+	t.Run("valid payload with models, enums, and web search", func(t *testing.T) {
+		body := []byte(`{"models":{"gemini-3-flash":{"displayName":"Gemini 3 Flash","model":"MODEL_PLACEHOLDER_M18"},"claude-sonnet-5-5-medium":{"displayName":"Claude Sonnet 5.5"}},"webSearchModelIds":["gemini-3-flash"]}`)
 		hints, ok := ParseAntigravityModelCapabilityHints(body)
 		if !ok {
 			t.Fatal("expected ok to be true")
@@ -43,6 +43,9 @@ func TestParseAntigravityModelCapabilityHints(t *testing.T) {
 		}
 		if _, exists := hints.ModelIDs["gemini-3-flash"]; !exists {
 			t.Errorf("missing gemini-3-flash in ModelIDs")
+		}
+		if gotEnum := hints.ModelEnums["gemini-3-flash"]; gotEnum != "MODEL_PLACEHOLDER_M18" {
+			t.Errorf("ModelEnums[gemini-3-flash] = %q, want MODEL_PLACEHOLDER_M18", gotEnum)
 		}
 		if len(hints.WebSearchModelIDs) != 1 {
 			t.Errorf("got %d webSearchModelIds, want 1", len(hints.WebSearchModelIDs))
@@ -114,6 +117,10 @@ func TestPersistedAntigravityCapabilityHintsRoundTrip(t *testing.T) {
 		WebSearchModelIDs: map[string]struct{}{
 			"gemini-3-flash": {},
 		},
+		ModelEnums: map[string]string{
+			"gemini-3-flash": "MODEL_PLACEHOLDER_M18",
+			"gemini-4-argon": "MODEL_PLACEHOLDER_M99",
+		},
 	}
 	project := "aicode-consumers"
 	endpointWithUser := "https://user:password@cloudcode-pa.googleapis.com"
@@ -137,6 +144,12 @@ func TestPersistedAntigravityCapabilityHintsRoundTrip(t *testing.T) {
 	}
 	if len(parsed.WebSearchModelIDs) != 1 {
 		t.Errorf("got %d web search models, want 1", len(parsed.WebSearchModelIDs))
+	}
+	if got := parsed.ModelEnums["gemini-3-flash"]; got != "MODEL_PLACEHOLDER_M18" {
+		t.Errorf("parsed ModelEnums[gemini-3-flash] = %q, want MODEL_PLACEHOLDER_M18", got)
+	}
+	if got := LookupPersistedAntigravityModelEnum(metadata, "GEMINI-4-ARGON"); got != "MODEL_PLACEHOLDER_M99" {
+		t.Errorf("LookupPersistedAntigravityModelEnum = %q, want MODEL_PLACEHOLDER_M99", got)
 	}
 
 	// Mismatched project
@@ -167,9 +180,15 @@ func TestFetchAntigravityAvailableModels(t *testing.T) {
 			if r.Header.Get("Content-Type") != "application/json" {
 				t.Errorf("unexpected content-type: %s", r.Header.Get("Content-Type"))
 			}
+			if ua := r.Header.Get("User-Agent"); !strings.HasPrefix(ua, "antigravity/cli/") || strings.Contains(ua, "CLIProxyAPI") {
+				t.Errorf("unexpected User-Agent: %q", ua)
+			}
+			if apiClient := r.Header.Get("X-Goog-Api-Client"); apiClient != "" {
+				t.Errorf("unexpected X-Goog-Api-Client: %q", apiClient)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"models":{"gemini-3-flash":{}},"webSearchModelIds":["gemini-3-flash"]}`))
+			_, _ = w.Write([]byte(`{"models":{"gemini-3-flash":{"model":"MODEL_PLACEHOLDER_M18"}},"webSearchModelIds":["gemini-3-flash"]}`))
 		}))
 		defer server.Close()
 
@@ -183,6 +202,9 @@ func TestFetchAntigravityAvailableModels(t *testing.T) {
 		}
 		if len(hints.ModelIDs) != 1 {
 			t.Errorf("got %d models, want 1", len(hints.ModelIDs))
+		}
+		if gotEnum := hints.ModelEnums["gemini-3-flash"]; gotEnum != "MODEL_PLACEHOLDER_M18" {
+			t.Errorf("got ModelEnums[gemini-3-flash] = %q, want MODEL_PLACEHOLDER_M18", gotEnum)
 		}
 	})
 

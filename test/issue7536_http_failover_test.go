@@ -16,7 +16,7 @@ import (
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
-	openaihandlers "github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
+	geminihandlers "github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/gemini"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
@@ -88,10 +88,10 @@ func TestIssue7536_SignatureOnlyZeroOutputNoFinishReasonRotatesAndExhaustsTo502(
 	}
 
 	router := gin.New()
-	router.POST("/v1/chat/completions", openaihandlers.NewOpenAIAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)).ChatCompletions)
+	router.POST("/v1beta/models/*action", geminihandlers.NewGeminiAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)).GeminiHandler)
 
-	reqBody := `{"model":"` + model + `","stream":true,"messages":[{"role":"user","content":"hi"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
+	reqBody := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/"+model+":streamGenerateContent?alt=sse", strings.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -132,12 +132,12 @@ func TestIssue7536_SignatureOnlyZeroOutputNoFinishReasonRotatesAndExhaustsTo502(
 	}
 
 	exhaustedRouter := gin.New()
-	exhaustedRouter.POST("/v1/chat/completions", openaihandlers.NewOpenAIAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{
+	exhaustedRouter.POST("/v1beta/models/*action", geminihandlers.NewGeminiAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{BootstrapRetries: 1},
-	}, exhaustedManager)).ChatCompletions)
+	}, exhaustedManager)).GeminiHandler)
 
 	beforeCalls := badCalls.Load()
-	exReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"`+exhaustedModel+`","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	exReq := httptest.NewRequest(http.MethodPost, "/v1beta/models/"+exhaustedModel+":streamGenerateContent?alt=sse", strings.NewReader(reqBody))
 	exReq.Header.Set("Content-Type", "application/json")
 	exRec := httptest.NewRecorder()
 	exhaustedRouter.ServeHTTP(exRec, exReq)
@@ -145,8 +145,8 @@ func TestIssue7536_SignatureOnlyZeroOutputNoFinishReasonRotatesAndExhaustsTo502(
 	if exRec.Code != http.StatusBadGateway {
 		t.Fatalf("exhausted status = %d, want 502; body=%s", exRec.Code, exRec.Body.String())
 	}
-	if strings.Contains(exRec.Body.String(), `"finish_reason":"stop"`) {
-		t.Fatalf("exhausted response must not emit finish_reason:stop: %s", exRec.Body.String())
+	if strings.Contains(exRec.Body.String(), `"finishReason":"STOP"`) {
+		t.Fatalf("exhausted response must not emit finishReason STOP: %s", exRec.Body.String())
 	}
 	if got := badCalls.Load() - beforeCalls; got < 2 {
 		t.Fatalf("expected credential rotation & bootstrap retry (>=2 calls), got %d", got)

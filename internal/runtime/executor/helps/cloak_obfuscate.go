@@ -4,7 +4,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/MoeForge/moego/ojson"
@@ -19,7 +18,6 @@ const zeroWidthSpace = "\u200B"
 // combiningGraphemeJoiner is the Unicode combining grapheme joiner (U+034F)
 // used for Antigravity system-instruction obfuscation where U+200B obfuscation
 // remains rejected by the upstream endpoint.
-const combiningGraphemeJoiner = "\u034F"
 
 type sensitiveWordRule struct {
 	target        string
@@ -131,23 +129,6 @@ func BuildSensitiveWordMatcherWithPatterns(
 	patterns []config.SensitivePatternRule,
 ) *SensitiveWordMatcher {
 	return buildSensitiveWordMatcher(words, replacements, patterns, obfuscateWord, zeroWidthSpace)
-}
-
-// BuildAntigravitySensitiveWordMatcher compiles a matcher for Antigravity system
-// instructions combining literal replacements and per-subword U+034F obfuscation.
-func BuildAntigravitySensitiveWordMatcher(words []string, replacements map[string]string) *SensitiveWordMatcher {
-	return BuildAntigravitySensitiveWordMatcherWithPatterns(words, replacements, nil)
-}
-
-// BuildAntigravitySensitiveWordMatcherWithPatterns compiles a matcher for Antigravity
-// system instructions combining ordered RE2 regex replacements, literal replacements,
-// and per-subword U+034F obfuscation.
-func BuildAntigravitySensitiveWordMatcherWithPatterns(
-	words []string,
-	replacements map[string]string,
-	patterns []config.SensitivePatternRule,
-) *SensitiveWordMatcher {
-	return buildSensitiveWordMatcher(words, replacements, patterns, obfuscateAntigravityPhrase, combiningGraphemeJoiner)
 }
 
 func buildSensitiveWordMatcher(
@@ -334,69 +315,6 @@ func obfuscateWord(word string) string {
 	}
 
 	return string(r) + zeroWidthSpace + word[size:]
-}
-
-func isAntigravitySubwordRune(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '\u034F' || r == '\u200B'
-}
-
-func obfuscateSingleSubwordCGJ(subword string) (string, bool) {
-	if strings.Contains(subword, combiningGraphemeJoiner) {
-		return subword, true
-	}
-	r, size := utf8.DecodeRuneInString(subword)
-	if r == utf8.RuneError || size >= len(subword) {
-		return subword, false
-	}
-	return string(r) + combiningGraphemeJoiner + subword[size:], true
-}
-
-// obfuscateAntigravityPhrase inserts U+034F after the first rune of every
-// alphanumeric subword (>= 2 runes) within phrase, preserving punctuation and whitespace.
-func obfuscateAntigravityPhrase(phrase string) string {
-	if phrase == "" || strings.Contains(phrase, combiningGraphemeJoiner) {
-		return phrase
-	}
-
-	var b strings.Builder
-	b.Grow(len(phrase) + len(combiningGraphemeJoiner)*2)
-	subwordStart := -1
-	inserted := false
-
-	for i, r := range phrase {
-		if isAntigravitySubwordRune(r) {
-			if subwordStart < 0 {
-				subwordStart = i
-			}
-			continue
-		}
-		if subwordStart >= 0 {
-			obf, did := obfuscateSingleSubwordCGJ(phrase[subwordStart:i])
-			b.WriteString(obf)
-			if did {
-				inserted = true
-			}
-			subwordStart = -1
-		}
-		b.WriteRune(r)
-	}
-	if subwordStart >= 0 {
-		obf, did := obfuscateSingleSubwordCGJ(phrase[subwordStart:])
-		b.WriteString(obf)
-		if did {
-			inserted = true
-		}
-	}
-
-	if inserted {
-		return b.String()
-	}
-
-	r, size := utf8.DecodeRuneInString(phrase)
-	if r == utf8.RuneError || size >= len(phrase) {
-		return phrase
-	}
-	return string(r) + combiningGraphemeJoiner + phrase[size:]
 }
 
 func (m *SensitiveWordMatcher) collectPatternSpans(text string) []patternMatchSpan {
@@ -771,61 +689,6 @@ func ObfuscateSensitiveWordsDoc(doc *ojson.Doc, matcher *SensitiveWordMatcher) b
 	if obfuscateMessagesDoc(doc, matcher) {
 		modified = true
 	}
-	return modified
-}
-
-// ObfuscateSensitiveWordsInSystemInstruction obfuscates sensitive words in an Antigravity system instruction.
-func ObfuscateSensitiveWordsInSystemInstruction(payload []byte, matcher *SensitiveWordMatcher) []byte {
-	if !matcher.hasRules() || len(payload) == 0 {
-		return payload
-	}
-	doc := ojson.NewDoc(payload)
-	if !ObfuscateSensitiveWordsInSystemInstructionDoc(doc, matcher) {
-		return payload
-	}
-	return doc.Bytes()
-}
-
-// ObfuscateSensitiveWordsInSystemInstructionDoc obfuscates sensitive words in an Antigravity system instruction in place on doc.
-func ObfuscateSensitiveWordsInSystemInstructionDoc(doc *ojson.Doc, matcher *SensitiveWordMatcher) bool {
-	if !matcher.hasRules() || doc == nil || doc.Len() == 0 {
-		return false
-	}
-
-	modified := false
-	for _, path := range []string{"request.systemInstruction", "request.system_instruction"} {
-		instruction := doc.Get(path)
-		if !instruction.Exists() {
-			continue
-		}
-		if instruction.Type == ojson.String {
-			text := instruction.String()
-			if obfuscated := matcher.obfuscateText(text); obfuscated != text {
-				if errSet := doc.Set(path, obfuscated); errSet == nil {
-					modified = true
-				}
-			}
-			continue
-		}
-
-		parts := instruction.Get("parts")
-		if !parts.IsArray() {
-			continue
-		}
-		parts.ForEach(func(key, part ojson.Result) bool {
-			if part.Get("text").Type != ojson.String {
-				return true
-			}
-			text := part.Get("text").String()
-			if obfuscated := matcher.obfuscateText(text); obfuscated != text {
-				if errSet := doc.Set(path+".parts."+key.String()+".text", obfuscated); errSet == nil {
-					modified = true
-				}
-			}
-			return true
-		})
-	}
-
 	return modified
 }
 

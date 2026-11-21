@@ -180,7 +180,7 @@ func TestManagerExecute_ModelAliasRequestNotBlockedByOtherModelQuotaCooldown(t *
 		context.Background(),
 		[]string{provider},
 		cliproxyexecutor.Request{Model: requestModel},
-		cliproxyexecutor.Options{},
+		cliproxyexecutor.Options{SourceFormat: "gemini"},
 	)
 	if errExecute != nil {
 		t.Fatalf("Execute() error = %v, want success", errExecute)
@@ -327,7 +327,7 @@ func TestManagerExecute_ModelAliasRequestBlockedWhenTargetModelInQuotaCooldown(t
 		context.Background(),
 		[]string{provider},
 		cliproxyexecutor.Request{Model: requestModel},
-		cliproxyexecutor.Options{},
+		cliproxyexecutor.Options{SourceFormat: "gemini"},
 	)
 	if errExecute == nil {
 		t.Fatal("Execute() error = nil, want cooldown error")

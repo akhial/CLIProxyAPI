@@ -60,33 +60,15 @@ func NewAntigravityAuth(cfg *config.Config, httpClient *http.Client) *Antigravit
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	if httpClient != nil {
-		return &AntigravityAuth{httpClient: httpClient}
+	if httpClient == nil {
+		httpClient = util.SetProxy(&cfg.SDKConfig, &http.Client{})
 	}
-	return &AntigravityAuth{
-		httpClient: util.SetProxy(&cfg.SDKConfig, &http.Client{}),
-	}
-}
-
-func (o *AntigravityAuth) shortUserAgent() string {
-	return misc.AntigravityRequestUserAgent("")
-}
-
-func (o *AntigravityAuth) nodeUserAgent() string {
-	return misc.AntigravityOnboardUserUserAgent("")
+	return &AntigravityAuth{httpClient: httpClient}
 }
 
 func antigravityLoadCodeAssistMetadata() map[string]string {
 	return map[string]string{
 		"ideType": "ANTIGRAVITY",
-	}
-}
-
-func antigravityControlPlaneMetadata(userAgent string) map[string]string {
-	return map[string]string{
-		"ide_type":    "ANTIGRAVITY",
-		"ide_version": misc.AntigravityVersionFromUserAgent(userAgent),
-		"ide_name":    "antigravity",
 	}
 }
 
@@ -210,7 +192,7 @@ func (o *AntigravityAuth) FetchUserInfo(ctx context.Context, accessToken string)
 		return "", fmt.Errorf("antigravity userinfo: create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("User-Agent", o.shortUserAgent())
+	req.Header.Set("User-Agent", misc.AntigravityGatewayUserAgent)
 
 	resp, errDo := o.httpClient.Do(req)
 	if errDo != nil {
@@ -247,7 +229,7 @@ func (o *AntigravityAuth) FetchUserInfo(ctx context.Context, accessToken string)
 
 // FetchProjectID retrieves the project ID for the authenticated user via loadCodeAssist
 func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string) (string, error) {
-	userAgent := o.shortUserAgent()
+	userAgent := misc.AntigravityGatewayUserAgent
 	loadReqBody := map[string]any{
 		"metadata": antigravityLoadCodeAssistMetadata(),
 	}
@@ -312,10 +294,10 @@ func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string
 // OnboardUser attempts to fetch the project ID via onboardUser by polling for completion
 func (o *AntigravityAuth) OnboardUser(ctx context.Context, accessToken, tierID string) (string, error) {
 	log.Infof("Antigravity: onboarding user with tier: %s", tierID)
-	userAgent := o.nodeUserAgent()
+	userAgent := misc.AntigravityGatewayUserAgent
 	requestBody := map[string]any{
 		"tier_id":  tierID,
-		"metadata": antigravityControlPlaneMetadata(userAgent),
+		"metadata": map[string]string{"ide_type": "ANTIGRAVITY"},
 	}
 
 	rawBody, errMarshal := json.Marshal(requestBody)
@@ -344,7 +326,6 @@ func (o *AntigravityAuth) OnboardUser(ctx context.Context, accessToken, tierID s
 		req.Header.Set("Accept", "*/*")
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", userAgent)
-		req.Header.Set("X-Goog-Api-Client", misc.AntigravityGoogAPIClientUA)
 
 		resp, errDo := o.httpClient.Do(req)
 		if errDo != nil {

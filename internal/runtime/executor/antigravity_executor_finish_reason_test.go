@@ -86,7 +86,7 @@ func TestAntigravityStreamSurfacesTrailingBackendError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	for _, format := range []sdktranslator.Format{sdktranslator.FormatClaude, sdktranslator.FormatOpenAI} {
+	for _, format := range []sdktranslator.Format{sdktranslator.FormatGemini} {
 		t.Run(format.String(), func(t *testing.T) {
 			executor := NewAntigravityExecutor(&config.Config{
 				Antigravity:  config.AntigravityConfig{},
@@ -101,7 +101,7 @@ func TestAntigravityStreamSurfacesTrailingBackendError(t *testing.T) {
 				Attributes: map[string]string{"base_url": server.URL},
 			}, cliproxyexecutor.Request{
 				Model:   "gemini-3.7-flash",
-				Payload: []byte(`{"model":"gemini-3.7-flash","stream":true,"messages":[{"role":"user","content":"hello"}]}`),
+				Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`),
 			}, cliproxyexecutor.Options{
 				SourceFormat:   format,
 				ResponseFormat: format,
@@ -132,69 +132,6 @@ func TestAntigravityStreamSurfacesTrailingBackendError(t *testing.T) {
 	}
 }
 
-// TestAntigravityStreamDoesNotEmitClaudeMessageStopOnReadError locks in the
-// executor ordering fix on the response format where it is observable: the
-// Claude translator has always synthesized a terminal event on [DONE], so
-// translating the tail before checking scanner.Err() reported a truncated
-// upstream stream to Claude clients as a completed message.
-func TestAntigravityStreamDoesNotEmitClaudeMessageStopOnReadError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			return
-		}
-		_, _ = io.WriteString(w, `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]}}],"modelVersion":"gemini-3.7-flash","responseId":"resp-cut"}}`+"\n\n")
-		flusher.Flush()
-		hijacker, ok := w.(http.Hijacker)
-		if !ok {
-			return
-		}
-		conn, _, errHijack := hijacker.Hijack()
-		if errHijack == nil {
-			_ = conn.Close()
-		}
-	}))
-	defer server.Close()
-
-	executor := NewAntigravityExecutor(&config.Config{
-		Antigravity:  config.AntigravityConfig{},
-		RequestRetry: 1,
-	})
-	result, errExecute := executor.ExecuteStream(context.Background(), &cliproxyauth.Auth{
-		Metadata: map[string]any{
-			"access_token": "token-123",
-			"expired":      time.Now().Add(24 * time.Hour).Format(time.RFC3339),
-			"project_id":   "project-1",
-		},
-		Attributes: map[string]string{"base_url": server.URL},
-	}, cliproxyexecutor.Request{
-		Model:   "gemini-3.7-flash",
-		Payload: []byte(`{"model":"gemini-3.7-flash","max_tokens":256,"stream":true,"messages":[{"role":"user","content":"hello"}]}`),
-	}, cliproxyexecutor.Options{
-		SourceFormat:   sdktranslator.FormatClaude,
-		ResponseFormat: sdktranslator.FormatClaude,
-		Stream:         true,
-	})
-	if errExecute != nil {
-		t.Fatalf("ExecuteStream() error = %v", errExecute)
-	}
-
-	var streamErr error
-	for chunk := range result.Chunks {
-		if chunk.Err != nil {
-			streamErr = chunk.Err
-			continue
-		}
-		if bytes.Contains(chunk.Payload, []byte("message_stop")) {
-			t.Fatalf("read error must not emit message_stop: %s", chunk.Payload)
-		}
-	}
-	if streamErr == nil {
-		t.Fatal("expected stream read error")
-	}
-}
-
 func TestAntigravityStreamDoesNotFinalizeEmptyUpstreamStream(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -213,8 +150,6 @@ func TestAntigravityStreamDoesNotFinalizeEmptyUpstreamStream(t *testing.T) {
 	}{
 		{"gemini", sdktranslator.FormatGemini, sdktranslator.FormatGemini,
 			`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`},
-		{"openai", sdktranslator.FormatOpenAI, sdktranslator.FormatOpenAI,
-			`{"model":"gemini-3.7-flash","messages":[{"role":"user","content":"hello"}],"stream":true}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			executor := NewAntigravityExecutor(&config.Config{
@@ -289,38 +224,6 @@ func TestAntigravityStreamSynthesizesGeminiTerminalChunkWithUsage(t *testing.T) 
 	}
 	if finishReasonCount != 1 {
 		t.Fatalf("expected exactly one finishReason chunk, got %d", finishReasonCount)
-	}
-}
-
-func TestAntigravityStreamSynthesizesOpenAIToolCallsFinishReason(t *testing.T) {
-	server := newAntigravityNoFinishReasonServer(t)
-	defer server.Close()
-
-	chunks := collectAntigravityStream(t, server.URL, sdktranslator.FormatOpenAI, sdktranslator.FormatOpenAI,
-		`{"model":"gemini-3.7-flash","messages":[{"role":"user","content":"hello"}],"stream":true}`)
-
-	terminal := chunks[len(chunks)-1]
-	if fr := ojson.GetBytes(terminal, "choices.0.finish_reason").String(); fr != "tool_calls" {
-		t.Fatalf("terminal finish_reason = %q, want tool_calls", fr)
-	}
-	if got := ojson.GetBytes(terminal, "usage.total_tokens").Int(); got != 153720 {
-		t.Fatalf("terminal total_tokens = %d, want 153720", got)
-	}
-	if got := ojson.GetBytes(terminal, "usage.prompt_tokens").Int(); got != 153609 {
-		t.Fatalf("terminal prompt_tokens = %d, want 153609", got)
-	}
-	if got := ojson.GetBytes(terminal, "model").String(); got != "gemini-3.7-flash" {
-		t.Fatalf("terminal model = %q, want gemini-3.7-flash", got)
-	}
-
-	var finishReasonCount int
-	for _, chunk := range chunks {
-		if ojson.GetBytes(chunk, "choices.0.finish_reason").String() != "" {
-			finishReasonCount++
-		}
-	}
-	if finishReasonCount != 1 {
-		t.Fatalf("expected exactly one finish_reason chunk, got %d", finishReasonCount)
 	}
 }
 

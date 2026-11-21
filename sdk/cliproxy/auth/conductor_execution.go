@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -259,9 +260,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	ctx = WithCodexClientRequest(ctx, isOpenAIImageExecutionOptions(opts) || IsCodexClientRequest(ctx, opts.Headers))
 	ctx = coreusage.CaptureIdentity(ctx)
 	ctx = contextWithInFlightScope(ctx, scope)
-	normalized := m.normalizeProviders(providers)
-	if len(normalized) == 0 {
-		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+	normalized, errProviders := m.providersForRequest(providers, opts)
+	if errProviders != nil {
+		return cliproxyexecutor.Response{}, errProviders
 	}
 	opts, pinnedThread, errThread := withClaudeThreadAuth(ctx, normalized, req, opts)
 	if errThread != nil {
@@ -280,7 +281,6 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	var lastErr error
 	var preferredUpstreamErr error
 	var selectionCooldownDeadline time.Time
-	var terminalRoundRejectedByScheduler bool
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
 	continuitySession := ensureContinuitySession(ctx, &opts)
 	if continuitySession.terminated {
@@ -332,10 +332,8 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 			if lastErr == nil && preferredUpstreamErr == nil {
 				return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
 			}
-			terminalRoundRejectedByScheduler = true
 			break
 		}
-		terminalRoundRejectedByScheduler = hasRoundEndedBySchedulerReject(errExec)
 		observeSelectionCooldownDeadline(&selectionCooldownDeadline, errExec, time.Now())
 		continuitySession.priorAttemptSeen = true
 		if upstreamAttempted {
@@ -393,13 +391,6 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		lastErr = unwrapExecutionBoundaryError(lastErr)
 		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, retryModel, opts)
-		if !terminalRoundRejectedByScheduler && !continuitySession.terminated && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
-			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
-				return cliproxyexecutor.Response{}, errCredits
-			} else if ok {
-				return resp, nil
-			}
-		}
 		lastErr = m.annotatePoolCooldownTerminalError(ctx, normalized, retryModel, opts, lastErr, selectionCooldownDeadline)
 		if pinnedThread {
 			lastErr = claudeThreadReplayError(lastErr)
@@ -426,9 +417,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
 	ctx = coreusage.CaptureIdentity(ctx)
 	ctx = contextWithInFlightScope(ctx, scope)
-	normalized := m.normalizeProviders(providers)
-	if len(normalized) == 0 {
-		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+	normalized, errProviders := m.providersForRequest(providers, opts)
+	if errProviders != nil {
+		return cliproxyexecutor.Response{}, errProviders
 	}
 	if m.HomeEnabled() {
 		resp, errHome := m.executeHome(ctx, normalized, req, opts, true)
@@ -505,9 +496,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			defer unlockSession()
 		}
 	}
-	normalized := m.normalizeProviders(providers)
-	if len(normalized) == 0 {
-		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+	normalized, errProviders := m.providersForRequest(providers, opts)
+	if errProviders != nil {
+		return nil, errProviders
 	}
 	opts, pinnedThread, errThread := withClaudeThreadAuth(ctx, normalized, req, opts)
 	if errThread != nil {
@@ -519,7 +510,6 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	var lastErr error
 	var preferredUpstreamErr error
 	var selectionCooldownDeadline time.Time
-	var terminalRoundRejectedByScheduler bool
 	homeRetryLimit := -1
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
 	continuitySession := ensureContinuitySession(ctx, &opts)
@@ -608,11 +598,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			if lastErr == nil && preferredUpstreamErr == nil {
 				return nil, unwrapExecutionBoundaryError(errStream)
 			}
-			terminalRoundRejectedByScheduler = true
 			break
 		}
 		continuitySession.priorAttemptSeen = true
-		terminalRoundRejectedByScheduler = hasRoundEndedBySchedulerReject(errStream)
 		lastErr = errStream
 		if upstreamAttempted && m.isCodexAttemptFailure(errStream, roundAttempted) {
 			eligibility := authSelectionEligibilityForRequest(ctx, opts)
@@ -680,13 +668,6 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		}
 		lastErr = unwrapExecutionBoundaryError(lastErr)
 		lastErr = m.normalizeSessionAffinityNeverTerminalError(lastErr, normalized, retryModel, opts)
-		if !terminalRoundRejectedByScheduler && !continuitySession.terminated && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
-			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
-				return nil, errCredits
-			} else if ok {
-				return result, nil
-			}
-		}
 		if !m.HomeEnabled() {
 			lastErr = m.annotatePoolCooldownTerminalError(ctx, normalized, retryModel, opts, lastErr, selectionCooldownDeadline)
 		}
@@ -2678,6 +2659,8 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 	if routeModel == "" {
 		if models := registry.GetGlobalRegistry().GetModelsForClient(auth.ID); len(models) > 0 && models[0] != nil && strings.TrimSpace(models[0].ID) != "" {
 			routeModel = strings.TrimSpace(models[0].ID)
+		} else if provider == "antigravity" {
+			return auth, &Error{Code: "model_required", Message: "specify a Gemini model to verify this Antigravity account", HTTPStatus: http.StatusBadRequest}
 		} else {
 			routeModel = "gpt-5"
 		}
@@ -2695,14 +2678,19 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 	// Codex upstreams reject integer max_output_tokens below 16, so the minimal
 	// verification budget must sit at that floor.
 	payload := []byte(fmt.Sprintf(`{"model":%q,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"ping"}]}],"max_output_tokens":16,"store":false}`, verifyModel))
+	format := sdktranslator.FormatOpenAIResponse
+	if provider == "antigravity" {
+		format = sdktranslator.FormatGemini
+		payload = []byte(`{"contents":[{"role":"user","parts":[{"text":"Reply OK."}]}],"generationConfig":{"maxOutputTokens":16}}`)
+	}
 	req := cliproxyexecutor.Request{
 		Model:   verifyModel,
 		Payload: payload,
 	}
 	opts := cliproxyexecutor.Options{
 		Stream:          true,
-		SourceFormat:    sdktranslator.FormatOpenAIResponse,
-		ResponseFormat:  sdktranslator.FormatOpenAIResponse,
+		SourceFormat:    format,
+		ResponseFormat:  format,
 		OriginalRequest: payload,
 		Headers:         http.Header{"X-Session-Id": {sessionID}},
 		Metadata:        map[string]any{cliproxyexecutor.CanonicalSessionIDMetadataKey: sessionID},
@@ -2869,4 +2857,19 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 		return updated, &Error{Code: "credential_superseded", Message: "credential was replaced during verification; re-run verification for the new credential", HTTPStatus: http.StatusConflict}
 	}
 	return updated, nil
+}
+
+// Only the native Gemini protocol can use an Antigravity credential.
+func (m *Manager) providersForRequest(providers []string, opts cliproxyexecutor.Options) ([]string, error) {
+	providers = m.normalizeProviders(providers)
+	if len(providers) == 0 {
+		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+	}
+	if opts.SourceFormat != sdktranslator.FormatGemini || cliproxyexecutor.ResponseFormatOrSource(opts) != sdktranslator.FormatGemini {
+		providers = slices.DeleteFunc(providers, func(p string) bool { return p == "antigravity" })
+		if len(providers) == 0 {
+			return nil, &Error{Code: "unsupported_protocol", Message: "Antigravity requires the native Gemini protocol", HTTPStatus: http.StatusBadRequest}
+		}
+	}
+	return providers, nil
 }
