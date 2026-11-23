@@ -120,6 +120,10 @@ Allow 30–60 minutes when nothing conflicts.
    hand or copy one into `static/`: its version would not follow the
    `<tag>-akhial.<sha>` convention or match the image. `upgrade.sh` refuses a UI
    file whose version does not end in the release name's UI commit.
+   Its health checks need a client key: `API_KEY` if set, else the `API key:` line
+   in `credentials.txt`, else the first `access.api-keys` entry read through the
+   management API. Since the shared key was revoked (2026-11-19), `credentials.txt`
+   has no such line, so the last one applies.
 
 6. **Check it** in the UI (hard refresh): forecast charts render, account rows
    show "Recorded … ago", and both Config → Routing Strategy and the Routing page
@@ -183,7 +187,7 @@ UI:
 | `src/features/quota/providers/claude/ClaudeResetGrants.tsx` | Upstream's dialog hook (explicit grant choice since v1.27.4, used by the card) plus the fork's `saved` grants fallback, `known`, and per-kind `lines`. Each line's `confirm` picks its kind's grant with the fork's `selectResetGrant.ts` (deleted upstream) and asks once (`confirm_text` / `confirm_text_fable`), then shares the dialog's `claim`. The fork has a button per kind, so the account row has no grant-choice dialog. The fork dropped two assertions from upstream's `card retains one dialog trigger…` test (`not.toContain('showConfirmation')` / `'selectResetGrant'`): they forbid this flow. Re-drop them if upstream changes that test. |
 | `src/features/quota/components/QuotaHeader.*` | "Show emails" button and the inline header style. |
 | `src/features/authFiles/components/ProviderTabs.*` | `variant="pills"`. |
-| `src/components/layout/MainLayout.tsx` | Brand block uses `ForkBrandLogo` (upstream's `abbrBrandName` is dropped). Keep upstream's `arrivingFromLogin` reveal wiring. |
+| `src/components/layout/MainLayout.tsx`, `tests/pageSecondaryText.test.ts` | Brand block uses `ForkBrandLogo` (upstream's `abbrBrandName` is dropped). Keep upstream's `arrivingFromLogin` reveal wiring. Upstream's sidebar brand test (since v1.29.0) expects `{FORK_BRAND_NAME}` in place of `{abbrBrandName}`; part of the `style(shell)` commit. |
 | `src/router/MainRoutes.tsx` | `/` and `/dashboard` render the fork's `ProxDashboardPage` (`src/features/dashboard/prox/`); upstream's `DashboardPage` is left in place, unrouted. |
 | `src/pages/LoginPage.tsx`, `tests/autoLoginEntry.test.ts` | Session restore renders `BootLoader` (a word and a bar) instead of upstream's splash, and navigates as soon as `restoreSession()` succeeds: no `splashMin` hold, exit fade or reveal. Upstream's "splash pacing" test case that pins the minimum splash is removed. Manual sign-in keeps upstream's success → exit → reveal hand-off and its tests (`tests/loginTransition.test.ts`). |
 | `src/pages/login/DotMatrixHero.tsx`, `tests/loginDotMatrixHero.test.ts` | The login hero drops upstream's `HERO_TITLE` tagline ("Welcome to CLI Proxy API."); the test checks that it is absent. Part of the `style(shell)` commit. |
@@ -193,6 +197,7 @@ UI:
 | `src/hooks/useVisualConfig.ts`, `src/types/visualConfig.ts`, `config/…/SectionNetwork.tsx`, `dashboard/DashboardPage.tsx`, `config/searchIndex.ts` | The new strategy value. Without it, saving the config resets it to round-robin. |
 | `src/types/routing.ts`, `src/services/api/routing.ts`, `src/features/routing/logic.ts`, `routing/components/{PolicyPanel,MemberCard,WeightDialog}.tsx` | Routing page: `weekly-reset-weighted-round-robin` (and `weekly-reset-wrr`) is in `ROUTING_STRATEGIES` and `normalizeRoutingStrategy`, and counts as weighted through `isWeightedRoutingStrategy` (weight badges, weight dialog, traffic shares). Without it the page shows production's strategy as round-robin. `tests/routingWeeklyReset.test.ts` covers it. |
 | `src/features/quota/QuotaPage.module.scss`, `src/services/api/index.ts` | Row skeleton style and the `quotaHistory` export. |
+| `tests/authFileCooldowns.test.ts` | A `label()` helper compares translations as React renders them (escaped quotes and apostrophes). New upstream assertions that compare raw `i18n.t(…)` with markup get it too. |
 | `src/utils/quota/relativeTime.ts`, `tests/quotaRelativeTime.test.ts` | Days start at 48 h, so a reset 24–47 h away reads in hours and shows whether it is inside the 36 h priority window; the upstream test matches. |
 
 ## Watch list in upstream release notes
@@ -225,6 +230,10 @@ change, re-check the fork feature that depends on them:
   `'weighted-round-robin'` must use `isWeightedRoutingStrategy`, and new strategy
   lists or normalizers must include `weekly-reset-weighted-round-robin`. Otherwise
   the UI shows production's strategy as round-robin, or saves it back as one.
+- **UI CSS custom properties**: since v1.29.0 upstream's `tests/cssCustomProperties.test.ts`
+  fails on a `var(--x)` without fallback unless it sees a definition. Fork code that sets
+  one inline writes a string-literal key (`{ '--x': value } as CSSProperties`), not a
+  computed `['--x' as string]` key.
 - **Codex model catalog**: `codex_client_models.go`, `registry.GetCodexClientModelsJSON`
   and `GetModelProviders`. If upstream adds its own provider filter, prefer it and
   keep the `provider=codex` URL working for existing Codex clients.
