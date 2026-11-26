@@ -811,7 +811,12 @@ func TestQuotaHistoryCollector_AntigravitySkipsExpiredIdleAuth(t *testing.T) {
 	nearExpiry.ID = "antigravity-near-expiry.json"
 	nearExpiry.FileName = "antigravity-near-expiry.json"
 
-	collector, clock, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, expired, nearExpiry)
+	noExpiry := testQuotaHistoryAntigravityAuth()
+	noExpiry.ID = "antigravity-no-expiry.json"
+	noExpiry.FileName = "antigravity-no-expiry.json"
+	delete(noExpiry.Metadata, "expired")
+
+	collector, clock, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, expired, nearExpiry, noExpiry)
 	nearExpiry.Metadata["expired"] = clock.Now().Add(20 * time.Second).Format(time.RFC3339)
 
 	resolveCalls := 0

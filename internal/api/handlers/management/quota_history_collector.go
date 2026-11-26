@@ -447,6 +447,14 @@ func quotaHistoryEligible(auth *coreauth.Auth) bool {
 	}
 }
 
+func quotaHistoryAntigravityTokenFresh(auth *coreauth.Auth, now time.Time) bool {
+	if auth == nil || !auth.HasValidAccessToken(now.Add(quotaHistoryAntigravityTokenMargin)) {
+		return false
+	}
+	exp, hasExp := auth.AccessTokenExpirationTime()
+	return hasExp && exp.After(now.Add(quotaHistoryAntigravityTokenMargin))
+}
+
 func quotaHistoryProvider(auth *coreauth.Auth) string {
 	return strings.ToLower(strings.TrimSpace(auth.Provider))
 }
@@ -479,10 +487,10 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 	if c.pollInterval <= 0 || now.Before(state.nextPollAt) {
 		return
 	}
-	// Do not wake idle Antigravity credentials just to poll quota: once the
-	// access token is expired or within its refresh skew window, wait until real
-	// traffic refreshes it on demand.
-	if provider == "antigravity" && !pollNow && !auth.HasValidAccessToken(now.Add(quotaHistoryAntigravityTokenMargin)) {
+	// Do not wake idle Antigravity credentials just to poll quota: require a
+	// known access-token expiry beyond the refresh skew window so background
+	// ticks never trigger OAuth refreshes and stop once the token expires.
+	if provider == "antigravity" && !pollNow && !quotaHistoryAntigravityTokenFresh(auth, now) {
 		return
 	}
 	lastSample := state.lastSample
