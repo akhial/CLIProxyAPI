@@ -902,6 +902,34 @@ func TestQuotaHistoryCollector_AntigravitySkipsWhenIdleBetweenPolls(t *testing.T
 		t.Fatalf("idle requests after second sample = %d, want 2", got)
 	}
 
+	// Local failures without completed inference must not trigger background polling.
+	auth.Failed += 3
+	clock.Advance(15 * time.Minute)
+	collector.tick(context.Background())
+	if got := doer.total(); got != 2 {
+		t.Fatalf("requests after failures without successful inference = %d, want 2", got)
+	}
+
+	// Explicit manual refresh (pollNow) bypasses the idle gate and must also run
+	// immediately when triggered inside the active jittered scheduledPollAt window.
+	collector.resolveToken = func(context.Context, *coreauth.Auth) (string, error) { return "ag-token", nil }
+	h := &Handler{}
+	registerTestQuotaHistoryCollector(t, h, collector)
+	h.RequestQuotaHistoryPoll(auth.ID)
+	collector.tick(context.Background())
+	if got := doer.total(); got != 3 {
+		t.Fatalf("requests after first manual poll = %d, want 3", got)
+	}
+	clock.Advance(1 * time.Minute)
+	if !clock.Now().Before(collector.states[auth.ID].scheduledPollAt) {
+		t.Fatalf("expected clock %v to be before scheduledPollAt %v", clock.Now(), collector.states[auth.ID].scheduledPollAt)
+	}
+	h.RequestQuotaHistoryPoll(auth.ID)
+	collector.tick(context.Background())
+	if got := doer.total(); got != 4 {
+		t.Fatalf("requests after manual poll inside active scheduled window = %d, want 4", got)
+	}
+
 	// Restoring persisted history on a fresh collector (restart) must stay quiet until new activity.
 	restarted := newQuotaHistoryCollector(nil, collector.store, 10*time.Minute)
 	restarted.nowFunc = clock.Now
@@ -909,22 +937,102 @@ func TestQuotaHistoryCollector_AntigravitySkipsWhenIdleBetweenPolls(t *testing.T
 	restarted.listAuths = func() []*coreauth.Auth { return []*coreauth.Auth{auth} }
 	restarted.do = doer.Do
 	auth.Success = 0
+	auth.Failed = 0
 	auth.LastInferenceVerifiedAt = time.Time{}
 	restarted.tick(context.Background())
-	if got := doer.total(); got != 2 {
-		t.Fatalf("post-restart idle requests = %d, want 2", got)
+	if got := doer.total(); got != 4 {
+		t.Fatalf("post-restart idle requests = %d, want 4", got)
 	}
 
-	// Manual refresh (pollNow) still bypasses the idle activity gate.
+	// Manual refresh (pollNow) still bypasses the idle activity gate after restart.
 	restarted.resolveToken = func(context.Context, *coreauth.Auth) (string, error) { return "ag-token", nil }
 	restarted.pollRequests = map[string]bool{auth.ID: true}
 	restarted.tick(context.Background())
-	if got := doer.total(); got != 3 {
-		t.Fatalf("requests after explicit poll request = %d, want 3", got)
+	if got := doer.total(); got != 5 {
+		t.Fatalf("requests after explicit poll request = %d, want 5", got)
+	}
+}
+
+func TestQuotaHistoryCollector_AntigravityFailedBaselineDoesNotRetryWhileIdle(t *testing.T) {
+	auth := testQuotaHistoryAntigravityAuth()
+	collector, clock, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, auth)
+	for _, url := range quotaHistoryAntigravityQuotaURLs {
+		doer.set(url, fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityPartialBody})
+	}
+
+	// First tick attempts the one-time baseline and fails across both hosts.
+	collector.tick(context.Background())
+	if got := doer.total(); got != len(quotaHistoryAntigravityQuotaURLs) {
+		t.Fatalf("initial baseline attempt requests = %d, want %d", got, len(quotaHistoryAntigravityQuotaURLs))
+	}
+
+	// After failure backoff expires, an idle credential must not retry.
+	doer.set(quotaHistoryAntigravityQuotaURLs[0], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})
+	clock.Advance(30 * time.Minute)
+	collector.tick(context.Background())
+	if got := doer.total(); got != len(quotaHistoryAntigravityQuotaURLs) {
+		t.Fatalf("requests after failed baseline while idle = %d, want %d", got, len(quotaHistoryAntigravityQuotaURLs))
+	}
+
+	// Once real inference succeeds, polling unblocks.
+	auth.Success++
+	collector.tick(context.Background())
+	if got := doer.total(); got != len(quotaHistoryAntigravityQuotaURLs)+1 {
+		t.Fatalf("requests after inference activity = %d, want %d", got, len(quotaHistoryAntigravityQuotaURLs)+1)
+	}
+}
+
+func TestQuotaHistoryCollector_AntigravityRetainedHistoryOlderThanLookbackSkipsBaselineOnRestart(t *testing.T) {
+	auth := testQuotaHistoryAntigravityAuth()
+	collector, clock, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, auth)
+	doer.set(quotaHistoryAntigravityQuotaURLs[0], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})
+
+	// Write a retained sample 3 days ago (older than 48h state lookback, within 35d retention).
+	threeDaysAgo := clock.Now().Add(-72 * time.Hour)
+	if errAppend := collector.store.Append(quotaHistorySample{
+		T:        threeDaysAgo.UnixMilli(),
+		AuthID:   auth.ID,
+		Provider: "antigravity",
+		Src:      quotaHistorySourcePoll,
+		Windows:  []quotaHistoryWindow{{ID: "seven_day", PeriodS: quotaHistoryWeekSeconds, Used: 20}},
+	}); errAppend != nil {
+		t.Fatalf("Append: %v", errAppend)
+	}
+
+	// Startup tick must detect the retained sample and skip the idle baseline poll.
+	collector.tick(context.Background())
+	if got := doer.total(); got != 0 {
+		t.Fatalf("requests for idle credential with 3-day-old retained history = %d, want 0", got)
+	}
+
+	// Subsequent idle ticks stay quiet too.
+	clock.Advance(20 * time.Minute)
+	collector.tick(context.Background())
+	if got := doer.total(); got != 0 {
+		t.Fatalf("subsequent idle requests = %d, want 0", got)
+	}
+
+	// Real inference unblocks polling.
+	auth.Success++
+	collector.tick(context.Background())
+	if got := doer.total(); got != 1 {
+		t.Fatalf("requests after inference activity = %d, want 1", got)
 	}
 }
 
 func TestQuotaHistoryCollector_AntigravityJitteredPollInterval(t *testing.T) {
+	if got := quotaHistoryDefaultJitter(0); got != 0 {
+		t.Fatalf("quotaHistoryDefaultJitter(0) = %v, want 0", got)
+	}
+	base := 10 * time.Minute
+	maxJitter := base / 5
+	for i := range 64 {
+		j := quotaHistoryDefaultJitter(base)
+		if j < -maxJitter || j > maxJitter {
+			t.Fatalf("sample %d: quotaHistoryDefaultJitter(%v) = %v, want within [%v, %v]", i, base, j, -maxJitter, maxJitter)
+		}
+	}
+
 	auth := testQuotaHistoryAntigravityAuth()
 	collector, clock, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, auth)
 	doer.set(quotaHistoryAntigravityQuotaURLs[0], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})

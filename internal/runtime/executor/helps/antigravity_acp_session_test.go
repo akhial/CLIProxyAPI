@@ -49,7 +49,11 @@ func TestACPSessionCorrelator_NextCallUsesStepFloorAndStaysMonotonic(t *testing.
 	}
 }
 
-func TestApplyAntigravityACPRequestDoc_RequestIDMonotonicAcrossRestart(t *testing.T) {
+// TestApplyAntigravityACPRequestDoc_RequestIDStepFloorAcrossRestart verifies
+// that the step-derived floor (last_step_index + 1) prevents requestId sequences
+// from resetting to /1 after a restart, while in-memory retries within a process
+// still advance monotonically.
+func TestApplyAntigravityACPRequestDoc_RequestIDStepFloorAcrossRestart(t *testing.T) {
 	origCorrelator := defaultACPSessionCorrelator
 	defaultACPSessionCorrelator = newACPSessionCorrelator()
 	t.Cleanup(func() {
