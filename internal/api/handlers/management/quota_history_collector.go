@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -65,7 +66,6 @@ const (
 // the management UI tries them. Daily hosts can answer without the Gemini pool.
 var quotaHistoryAntigravityQuotaURLs = []string{
 	"https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-	"https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary",
 	"https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
 }
 
@@ -87,6 +87,10 @@ type quotaHistoryAuthState struct {
 	lastPoll time.Time
 	// windows are the last recorded sample's windows, to spot a usage drop before its reset.
 	windows []quotaHistoryWindow
+	// lastActivityCount and lastInferenceAt record the Antigravity request activity
+	// observed when the last quota sample was taken so idle credentials do not poll.
+	lastActivityCount int64
+	lastInferenceAt   time.Time
 }
 
 // quotaHistoryCollector records Claude and Codex OAuth quota samples from passive
@@ -98,6 +102,7 @@ type quotaHistoryCollector struct {
 	pollInterval time.Duration
 	tickInterval time.Duration
 	nowFunc      func() time.Time
+	jitterFunc   func(time.Duration) time.Duration
 	listAuths    func() []*coreauth.Auth
 	resolveToken func(ctx context.Context, auth *coreauth.Auth) (string, error)
 	do           quotaHistoryDoFunc
@@ -125,6 +130,7 @@ func newQuotaHistoryCollector(h *Handler, store *quotaHistoryStore, pollInterval
 		pollInterval: pollInterval,
 		tickInterval: quotaHistoryTickInterval,
 		nowFunc:      time.Now,
+		jitterFunc:   quotaHistoryDefaultJitter,
 		listAuths:    h.quotaHistoryAuths,
 		resolveToken: func(ctx context.Context, auth *coreauth.Auth) (string, error) {
 			// An Antigravity refresh reads the config for its proxy; use a snapshot, as
@@ -462,6 +468,54 @@ func quotaHistoryCachedAntigravityToken(auth *coreauth.Auth, now time.Time) (str
 	return token, true
 }
 
+func quotaHistoryAntigravityHasActivity(auth *coreauth.Auth, state *quotaHistoryAuthState) bool {
+	if auth == nil || state == nil {
+		return false
+	}
+	// Allow one initial baseline sample for a brand-new credential with no history yet.
+	if state.lastSample.IsZero() {
+		return true
+	}
+	total := auth.Success + auth.Failed
+	if total > state.lastActivityCount {
+		return true
+	}
+	if total < state.lastActivityCount && total > 0 {
+		return true
+	}
+	return !auth.LastInferenceVerifiedAt.IsZero() && auth.LastInferenceVerifiedAt.After(state.lastInferenceAt)
+}
+
+// quotaHistoryDefaultJitter returns a uniform offset in [-base/5, +base/5]
+// so active-session Antigravity quota polls do not fire on an exact metronome.
+func quotaHistoryDefaultJitter(base time.Duration) time.Duration {
+	maxJitter := base / 5
+	if maxJitter <= 0 {
+		return 0
+	}
+	span := int64(maxJitter)*2 + 1
+	return time.Duration(rand.Int64N(span)) - maxJitter
+}
+
+func (c *quotaHistoryCollector) antigravityPollInterval() time.Duration {
+	base := c.pollInterval
+	if base <= 0 || c.jitterFunc == nil {
+		return base
+	}
+	jitter := c.jitterFunc(base)
+	maxJitter := base / 5
+	if jitter < -maxJitter {
+		jitter = -maxJitter
+	} else if jitter > maxJitter {
+		jitter = maxJitter
+	}
+	interval := base + jitter
+	if interval < time.Minute && base >= time.Minute {
+		interval = time.Minute
+	}
+	return interval
+}
+
 func quotaHistoryProvider(auth *coreauth.Auth) string {
 	return strings.ToLower(strings.TrimSpace(auth.Provider))
 }
@@ -496,11 +550,12 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 	}
 	// Do not wake idle Antigravity credentials just to poll quota: require a
 	// cached access token with a known expiry beyond the refresh skew window,
-	// and pass it read-only so background ticks can never trigger OAuth refresh.
+	// actual request activity since the previous sample, and a read-only token
+	// path so background ticks can never trigger OAuth refresh.
 	cachedToken := ""
 	if provider == "antigravity" && !pollNow {
 		token, ok := quotaHistoryCachedAntigravityToken(auth, now)
-		if !ok {
+		if !ok || !quotaHistoryAntigravityHasActivity(auth, state) {
 			return
 		}
 		cachedToken = token
@@ -509,7 +564,7 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 	if provider == "claude" {
 		lastSample = state.lastPoll
 	}
-	if !pollNow && !lastSample.IsZero() && now.Sub(lastSample) < c.pollInterval {
+	if !pollNow && !lastSample.IsZero() && !(provider == "antigravity" && !state.nextPollAt.IsZero()) && now.Sub(lastSample) < c.pollInterval {
 		return
 	}
 	if errPoll := c.poll(ctx, auth, provider, state, now, cachedToken); errPoll != nil {
@@ -586,7 +641,13 @@ func (c *quotaHistoryCollector) poll(ctx context.Context, auth *coreauth.Auth, p
 	c.record(ctx, auth, provider, state, now, quotaHistorySourcePoll, windows)
 	state.lastPoll = now
 	state.failures = 0
-	state.nextPollAt = time.Time{}
+	if provider == "antigravity" {
+		state.lastActivityCount = auth.Success + auth.Failed
+		state.lastInferenceAt = auth.LastInferenceVerifiedAt
+		state.nextPollAt = now.Add(c.antigravityPollInterval())
+	} else {
+		state.nextPollAt = time.Time{}
+	}
 	return nil
 }
 

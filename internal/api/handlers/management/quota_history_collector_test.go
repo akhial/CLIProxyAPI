@@ -713,10 +713,17 @@ func TestQuotaHistoryEligible_Antigravity(t *testing.T) {
 }
 
 func TestQuotaHistoryCollector_AntigravityFallsThroughPartialHosts(t *testing.T) {
+	for _, url := range quotaHistoryAntigravityQuotaURLs {
+		if strings.Contains(url, ".sandbox.") {
+			t.Fatalf("unexpected sandbox quota host in quotaHistoryAntigravityQuotaURLs: %q", url)
+		}
+	}
+	if len(quotaHistoryAntigravityQuotaURLs) != 2 {
+		t.Fatalf("len(quotaHistoryAntigravityQuotaURLs) = %d, want 2", len(quotaHistoryAntigravityQuotaURLs))
+	}
 	collector, _, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, testQuotaHistoryAntigravityAuth())
 	doer.set(quotaHistoryAntigravityQuotaURLs[0], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityPartialBody})
-	doer.set(quotaHistoryAntigravityQuotaURLs[1], fakeQuotaHistoryResponse{status: http.StatusForbidden, body: `{}`})
-	doer.set(quotaHistoryAntigravityQuotaURLs[2], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})
+	doer.set(quotaHistoryAntigravityQuotaURLs[1], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})
 	collector.tick(context.Background())
 
 	for _, url := range quotaHistoryAntigravityQuotaURLs {
@@ -859,6 +866,99 @@ func TestQuotaHistoryCollector_AntigravityBackgroundPollUsesCachedTokenReadOnly(
 	}
 	if got := doer.requestsTo(quotaHistoryAntigravityQuotaURLs[0])[0].Header.Get("Authorization"); got != "Bearer ag-token" {
 		t.Fatalf("Authorization = %q, want Bearer ag-token", got)
+	}
+}
+
+func TestQuotaHistoryCollector_AntigravitySkipsWhenIdleBetweenPolls(t *testing.T) {
+	auth := testQuotaHistoryAntigravityAuth()
+	collector, clock, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, auth)
+	doer.set(quotaHistoryAntigravityQuotaURLs[0], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})
+
+	// Initial baseline sample runs once for a credential with no stored history.
+	collector.tick(context.Background())
+	if got := doer.total(); got != 1 {
+		t.Fatalf("initial baseline requests = %d, want 1", got)
+	}
+
+	// Advancing past multiple poll intervals without new Antigravity requests must not poll.
+	clock.Advance(30 * time.Minute)
+	collector.tick(context.Background())
+	if got := doer.total(); got != 1 {
+		t.Fatalf("idle requests after 30m = %d, want 1", got)
+	}
+
+	// Recording real request activity unblocks the next due poll.
+	auth.Success++
+	auth.LastInferenceVerifiedAt = clock.Now()
+	collector.tick(context.Background())
+	if got := doer.total(); got != 2 {
+		t.Fatalf("requests after activity = %d, want 2", got)
+	}
+
+	// Going idle again suppresses further polls even while the token stays valid.
+	clock.Advance(20 * time.Minute)
+	collector.tick(context.Background())
+	if got := doer.total(); got != 2 {
+		t.Fatalf("idle requests after second sample = %d, want 2", got)
+	}
+
+	// Restoring persisted history on a fresh collector (restart) must stay quiet until new activity.
+	restarted := newQuotaHistoryCollector(nil, collector.store, 10*time.Minute)
+	restarted.nowFunc = clock.Now
+	restarted.jitterFunc = nil
+	restarted.listAuths = func() []*coreauth.Auth { return []*coreauth.Auth{auth} }
+	restarted.do = doer.Do
+	auth.Success = 0
+	auth.LastInferenceVerifiedAt = time.Time{}
+	restarted.tick(context.Background())
+	if got := doer.total(); got != 2 {
+		t.Fatalf("post-restart idle requests = %d, want 2", got)
+	}
+
+	// Manual refresh (pollNow) still bypasses the idle activity gate.
+	restarted.resolveToken = func(context.Context, *coreauth.Auth) (string, error) { return "ag-token", nil }
+	restarted.pollRequests = map[string]bool{auth.ID: true}
+	restarted.tick(context.Background())
+	if got := doer.total(); got != 3 {
+		t.Fatalf("requests after explicit poll request = %d, want 3", got)
+	}
+}
+
+func TestQuotaHistoryCollector_AntigravityJitteredPollInterval(t *testing.T) {
+	auth := testQuotaHistoryAntigravityAuth()
+	collector, clock, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, auth)
+	doer.set(quotaHistoryAntigravityQuotaURLs[0], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})
+
+	// Negative jitter (-2m on 10m -> 8m): next poll is allowed at +8m once active.
+	collector.jitterFunc = func(time.Duration) time.Duration { return -2 * time.Minute }
+	collector.tick(context.Background())
+	if got := doer.total(); got != 1 {
+		t.Fatalf("initial requests = %d, want 1", got)
+	}
+	auth.Success++
+	clock.Advance(7 * time.Minute)
+	collector.tick(context.Background())
+	if got := doer.total(); got != 1 {
+		t.Fatalf("requests at +7m (before -2m jittered 8m) = %d, want 1", got)
+	}
+	clock.Advance(1 * time.Minute)
+	// Switch to extreme positive jitter (+10m, must clamp to +2m -> 12m) for the following cycle.
+	collector.jitterFunc = func(time.Duration) time.Duration { return 10 * time.Minute }
+	collector.tick(context.Background())
+	if got := doer.total(); got != 2 {
+		t.Fatalf("requests at +8m = %d, want 2", got)
+	}
+
+	auth.Success++
+	clock.Advance(11 * time.Minute)
+	collector.tick(context.Background())
+	if got := doer.total(); got != 2 {
+		t.Fatalf("requests at +11m (before clamped +2m jittered 12m) = %d, want 2", got)
+	}
+	clock.Advance(1 * time.Minute)
+	collector.tick(context.Background())
+	if got := doer.total(); got != 3 {
+		t.Fatalf("requests at +12m = %d, want 3", got)
 	}
 }
 

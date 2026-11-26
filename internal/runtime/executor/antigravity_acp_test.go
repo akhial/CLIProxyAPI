@@ -577,6 +577,9 @@ func TestAntigravityACPExplicitHeadersAndValidation(t *testing.T) {
 	if got := parsed.Get("request.labels.last_step_index").String(); got != "7" {
 		t.Fatalf("last_step_index = %q, want 7", got)
 	}
+	if trajID := parsed.Get("request.labels.trajectory_id").String(); !strings.HasSuffix(parsed.Get("requestId").String(), "/"+trajID+"/8") {
+		t.Fatalf("requestId = %q, want suffix /%s/8", parsed.Get("requestId").String(), trajID)
+	}
 	if got := captured[0].Headers.Get("User-Agent"); !strings.Contains(got, "host_path=custom-host/2.0)") {
 		t.Fatalf("User-Agent = %q, want host_path=custom-host/2.0", got)
 	}
@@ -835,8 +838,8 @@ func TestAntigravityACPMultiTurnToolUse(t *testing.T) {
 	if got := t2.Get("request.labels.request_id").String(); got != trajID+"-1" {
 		t.Fatalf("turn 2 labels.request_id = %q, want %q", got, trajID+"-1")
 	}
-	if got := t2.Get("requestId").String(); !strings.HasSuffix(got, "/"+trajID+"/2") {
-		t.Fatalf("turn 2 requestId = %q, want suffix /%s/2", got, trajID)
+	if got := t2.Get("requestId").String(); !strings.HasSuffix(got, "/"+trajID+"/3") {
+		t.Fatalf("turn 2 requestId = %q, want suffix /%s/3", got, trajID)
 	}
 	// Verify functionResponse.response.result was normalized to .output per native wire format.
 	if got := t2.Get("request.contents.2.parts.0.functionResponse.response.output").String(); got != "no running tasks" {
