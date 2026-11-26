@@ -518,3 +518,100 @@ func quotaHistoryUnixToMs(value float64) int64 {
 	}
 	return int64(math.Round(value))
 }
+
+// parseAntigravityQuotaHistory extracts the Gemini pool's windows from an Antigravity
+// retrieveUserQuotaSummary response body. Claude/GPT buckets are a separate pool and are
+// skipped. The bool reports whether the body held any Gemini bucket, so callers can move
+// on from a daily host that answered with a partial summary.
+func parseAntigravityQuotaHistory(body []byte) ([]quotaHistoryWindow, bool) {
+	root := quotaHistoryJSONObject(body)
+	groups := root.Get("groups")
+	if !groups.IsArray() {
+		return nil, false
+	}
+	var fiveHour, weekly *quotaHistoryWindow
+	hasGemini := false
+	for _, group := range groups.Array() {
+		geminiGroup := strings.EqualFold(
+			strings.TrimSpace(quotaHistoryFirst(group, "displayName", "display_name").String()), "Gemini Models")
+		buckets := group.Get("buckets")
+		if !buckets.IsArray() {
+			continue
+		}
+		for _, bucket := range buckets.Array() {
+			bucketID := strings.ToLower(strings.TrimSpace(quotaHistoryFirst(bucket, "bucketId", "bucket_id").String()))
+			if !geminiGroup && !strings.HasPrefix(bucketID, "gemini-") {
+				continue
+			}
+			hasGemini = true
+			window, ok := antigravityHistoryWindow(bucket)
+			if !ok {
+				continue
+			}
+			// Several Gemini buckets of one length share the pool; the most used one binds.
+			slot := &weekly
+			if window.ID == quotaHistoryWindowFiveHour {
+				slot = &fiveHour
+			}
+			if *slot == nil || window.Used > (*slot).Used {
+				*slot = &window
+			}
+		}
+	}
+	windows := make([]quotaHistoryWindow, 0, 2)
+	for _, window := range []*quotaHistoryWindow{fiveHour, weekly} {
+		if window != nil {
+			windows = append(windows, *window)
+		}
+	}
+	return windows, hasGemini
+}
+
+func antigravityHistoryWindow(bucket ojson.Result) (quotaHistoryWindow, bool) {
+	var id string
+	var periodS int64
+	switch strings.ToLower(strings.TrimSpace(bucket.Get("window").String())) {
+	case "5h", "five-hour", "five_hour":
+		id, periodS = quotaHistoryWindowFiveHour, quotaHistoryFiveHourSeconds
+	case "weekly", "week":
+		id, periodS = quotaHistoryWindowSevenDay, quotaHistoryWeekSeconds
+	default:
+		return quotaHistoryWindow{}, false
+	}
+	resetAt := quotaHistoryResetMs(quotaHistoryFirst(bucket, "resetTime", "reset_time"))
+	rawFraction := quotaHistoryFirst(bucket, "remainingFraction", "remaining_fraction")
+	var remaining float64
+	switch {
+	case rawFraction.Exists():
+		fraction, ok := antigravityHistoryFraction(rawFraction)
+		if !ok {
+			return quotaHistoryWindow{}, false
+		}
+		remaining = fraction
+	case resetAt > 0:
+		// Proto3 JSON omits a zero remainingFraction, so a bucket with a reset but no
+		// fraction is used up.
+		remaining = 0
+	default:
+		return quotaHistoryWindow{}, false
+	}
+	return quotaHistoryWindow{
+		ID:      id,
+		PeriodS: periodS,
+		Used:    normalizeQuotaHistoryPercent((1 - remaining) * 100),
+		ResetAt: resetAt,
+	}, true
+}
+
+// antigravityHistoryFraction reads a 0..1 fraction given as a number, a numeric string,
+// or a percent string such as "42%".
+func antigravityHistoryFraction(value ojson.Result) (float64, bool) {
+	if value.Type == ojson.String {
+		raw := strings.TrimSpace(value.String())
+		if percent, found := strings.CutSuffix(raw, "%"); found {
+			number, ok := quotaHistoryParseFloat(percent)
+			return number / 100, ok
+		}
+	}
+	return quotaHistoryNumber(value)
+}

@@ -111,7 +111,7 @@ func (p quotaHistoryPoint) MarshalJSON() ([]byte, error) {
 	return append(buf, ']'), nil
 }
 
-// GetQuotaHistory returns the recorded Claude and Codex quota samples grouped by
+// GetQuotaHistory returns the recorded Claude, Codex and Antigravity quota samples grouped by
 // credential and window.
 //
 // Endpoint:

@@ -326,3 +326,82 @@ func TestQuotaHistoryWindowsFromSignals_CodexImageLimitIsNotPlanQuota(t *testing
 		t.Fatalf("text-limit windows = %+v, want %+v", windows, want)
 	}
 }
+
+func TestParseAntigravityQuotaHistory_GeminiOnly(t *testing.T) {
+	body := []byte(`{"groups":[
+		{"displayName":"Claude and GPT models","buckets":[
+			{"bucketId":"claude-weekly","window":"weekly","remainingFraction":0.1,"resetTime":"2026-11-01T00:00:00Z"},
+			{"bucketId":"claude-5h","window":"5h","remainingFraction":0.2,"resetTime":"2026-10-27T15:00:00Z"}]},
+		{"display_name":"Gemini Models","buckets":[
+			{"bucket_id":"gemini-weekly","window":"weekly","remaining_fraction":"0.42","reset_time":"2026-11-02T09:00:00Z"},
+			{"bucketId":"gemini-5h","window":"5h","remainingFraction":0.75,"resetTime":"2026-10-27T16:00:00.123456789123Z"},
+			{"bucketId":"gemini-daily","window":"daily","remainingFraction":0.5}]}]}`)
+	windows, hasGemini := parseAntigravityQuotaHistory(body)
+	if !hasGemini {
+		t.Fatal("hasGemini = false")
+	}
+	want := []quotaHistoryWindow{
+		{ID: "five_hour", PeriodS: quotaHistoryFiveHourSeconds, Used: 25, ResetAt: quotaHistoryTestMs(t, "2026-10-27T16:00:00.123Z")},
+		{ID: "seven_day", PeriodS: quotaHistoryWeekSeconds, Used: 58, ResetAt: quotaHistoryTestMs(t, "2026-11-02T09:00:00Z")},
+	}
+	if !reflect.DeepEqual(windows, want) {
+		t.Fatalf("windows = %+v, want %+v", windows, want)
+	}
+}
+
+func TestParseAntigravityQuotaHistory_EdgeValues(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		want      []quotaHistoryWindow
+		hasGemini bool
+	}{
+		{
+			name: "partial summary without Gemini",
+			body: `{"groups":[{"displayName":"Claude and GPT models","buckets":[{"bucketId":"claude-weekly","window":"weekly","remainingFraction":0.5}]}]}`,
+		},
+		{name: "not json", body: `nope`},
+		{name: "no groups", body: `{}`},
+		{
+			name:      "gemini bucket id outside the named group, percent string",
+			body:      `{"groups":[{"displayName":"Other","buckets":[{"bucketId":"Gemini-Pro","window":"weekly","remainingFraction":"40%"}]}]}`,
+			want:      []quotaHistoryWindow{{ID: "seven_day", PeriodS: quotaHistoryWeekSeconds, Used: 60}},
+			hasGemini: true,
+		},
+		{
+			name:      "missing fraction with a reset is used up",
+			body:      `{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-weekly","window":"weekly","resetTime":"2026-11-02T09:00:00Z"}]}]}`,
+			want:      []quotaHistoryWindow{{ID: "seven_day", PeriodS: quotaHistoryWeekSeconds, Used: 100, ResetAt: quotaHistoryTestMs(t, "2026-11-02T09:00:00Z")}},
+			hasGemini: true,
+		},
+		{
+			name:      "unparsable fraction and missing reset are skipped",
+			body:      `{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-weekly","window":"weekly","remainingFraction":"n/a"},{"bucketId":"gemini-5h","window":"5h"}]}]}`,
+			want:      []quotaHistoryWindow{},
+			hasGemini: true,
+		},
+		{
+			name: "most used bucket of a length wins, fractions clamp",
+			body: `{"groups":[{"displayName":"Gemini Models","buckets":[
+				{"bucketId":"gemini-flash-weekly","window":"weekly","remainingFraction":0.9},
+				{"bucketId":"gemini-pro-weekly","window":"weekly","remainingFraction":0.3},
+				{"bucketId":"gemini-5h","window":"5h","remainingFraction":1.5}]}]}`,
+			want: []quotaHistoryWindow{
+				{ID: "five_hour", PeriodS: quotaHistoryFiveHourSeconds, Used: 0},
+				{ID: "seven_day", PeriodS: quotaHistoryWeekSeconds, Used: 70},
+			},
+			hasGemini: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			windows, hasGemini := parseAntigravityQuotaHistory([]byte(tc.body))
+			if hasGemini != tc.hasGemini {
+				t.Fatalf("hasGemini = %v, want %v", hasGemini, tc.hasGemini)
+			}
+			if len(windows) != len(tc.want) || (len(tc.want) > 0 && !reflect.DeepEqual(windows, tc.want)) {
+				t.Fatalf("windows = %+v, want %+v", windows, tc.want)
+			}
+		})
+	}
+}

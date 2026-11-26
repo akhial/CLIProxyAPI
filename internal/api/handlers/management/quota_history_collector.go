@@ -1,6 +1,7 @@
 package management
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -53,6 +56,14 @@ const (
 	quotaHistoryCodexUserAgent   = "codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)"
 )
 
+// quotaHistoryAntigravityQuotaURLs are the Antigravity quota summary hosts in the order
+// the management UI tries them. Daily hosts can answer without the Gemini pool.
+var quotaHistoryAntigravityQuotaURLs = []string{
+	"https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+	"https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary",
+	"https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+}
+
 // quotaHistoryDoFunc performs one upstream request for a credential and
 // returns its status code and body.
 type quotaHistoryDoFunc func(auth *coreauth.Auth, req *http.Request) (int, []byte, error)
@@ -74,7 +85,8 @@ type quotaHistoryAuthState struct {
 }
 
 // quotaHistoryCollector records Claude and Codex OAuth quota samples from passive
-// response headers and, when those are stale, from active usage polls.
+// response headers and, when those are stale, from active usage polls, and the
+// Antigravity Gemini pool from usage polls alone.
 type quotaHistoryCollector struct {
 	store        *quotaHistoryStore
 	resets       *quotaHistoryResetStore
@@ -110,7 +122,9 @@ func newQuotaHistoryCollector(h *Handler, store *quotaHistoryStore, pollInterval
 		nowFunc:      time.Now,
 		listAuths:    h.quotaHistoryAuths,
 		resolveToken: func(ctx context.Context, auth *coreauth.Auth) (string, error) {
-			return h.resolveTokenForAuth(ctx, auth, "")
+			// An Antigravity refresh reads the config for its proxy; use a snapshot, as
+			// this runs outside any request.
+			return h.quotaHistorySnapshot().resolveTokenForAuth(ctx, auth, "")
 		},
 		do:            h.quotaHistoryDo,
 		resetCooldown: h.quotaHistoryResetCooldown,
@@ -131,7 +145,7 @@ func quotaHistoryCollectorFor(h *Handler) *quotaHistoryCollector {
 	return quotaHistoryCollectors.byHandler[h]
 }
 
-// StartQuotaHistory starts recording Claude and Codex OAuth quota samples in the
+// StartQuotaHistory starts recording Claude, Codex and Antigravity OAuth quota samples in the
 // background. It returns immediately and is a no-op when the collector already
 // runs or QUOTA_HISTORY_DISABLE is set.
 func (h *Handler) StartQuotaHistory() {
@@ -162,7 +176,7 @@ func (h *Handler) StartQuotaHistory() {
 	collector.done = make(chan struct{})
 	quotaHistoryCollectors.byHandler[h] = collector
 	go collector.run(ctx)
-	log.Infof("quota history: recording Claude/Codex quota samples in %s (poll interval %s, %d credentials restored)", dir, pollInterval, restored)
+	log.Infof("quota history: recording Claude/Codex/Antigravity quota samples in %s (poll interval %s, %d credentials restored)", dir, pollInterval, restored)
 }
 
 // StopQuotaHistory stops the collector started by StartQuotaHistory and waits
@@ -262,20 +276,26 @@ func (h *Handler) quotaHistoryAuths() []*coreauth.Auth {
 	return manager.List()
 }
 
-// quotaHistoryDo sends a request through the same transport and timeout as the
-// management APICall handler.
-func (h *Handler) quotaHistoryDo(auth *coreauth.Auth, req *http.Request) (int, []byte, error) {
-	// apiCallTransport reads h.cfg without h.mu; this runs outside any request,
-	// so hand it a clone taken under the lock instead of the live config.
+// quotaHistorySnapshot returns a Handler holding a clone of the config and the auth
+// manager, both taken under the lock. apiCallTransport reads h.cfg without h.mu, and
+// the collector runs outside any request, so it must not see the live config.
+func (h *Handler) quotaHistorySnapshot() *Handler {
 	snapshot := &Handler{}
 	if h != nil {
 		h.mu.Lock()
 		snapshot.cfg = h.cfg.CloneForRuntime()
+		snapshot.authManager = h.authManager
 		h.mu.Unlock()
 	}
+	return snapshot
+}
+
+// quotaHistoryDo sends a request through the same transport and timeout as the
+// management APICall handler.
+func (h *Handler) quotaHistoryDo(auth *coreauth.Auth, req *http.Request) (int, []byte, error) {
 	client := &http.Client{
 		Timeout:   defaultAPICallTimeout,
-		Transport: snapshot.apiCallTransport(auth, ""),
+		Transport: h.quotaHistorySnapshot().apiCallTransport(auth, ""),
 	}
 	defer client.CloseIdleConnections()
 	resp, errDo := client.Do(req)
@@ -393,7 +413,7 @@ func quotaHistoryEligible(auth *coreauth.Auth) bool {
 		return false
 	}
 	switch quotaHistoryProvider(auth) {
-	case "claude", "codex":
+	case "claude", "codex", "antigravity":
 		return auth.AuthKind() == coreauth.AuthKindOAuth
 	default:
 		return false
@@ -494,6 +514,12 @@ func (c *quotaHistoryCollector) poll(ctx context.Context, auth *coreauth.Auth, p
 		if plan != "" {
 			state.plan = plan
 		}
+	case "antigravity":
+		var errFetch error
+		windows, errFetch = c.fetchAntigravityQuota(ctx, auth, token)
+		if errFetch != nil {
+			return errFetch
+		}
 	default:
 		return fmt.Errorf("unsupported provider %q", provider)
 	}
@@ -592,7 +618,15 @@ func (c *quotaHistoryCollector) token(ctx context.Context, auth *coreauth.Auth) 
 }
 
 func (c *quotaHistoryCollector) fetch(ctx context.Context, auth *coreauth.Auth, url string, headers map[string]string) ([]byte, error) {
-	req, errRequest := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	return c.send(ctx, auth, http.MethodGet, url, headers, nil)
+}
+
+func (c *quotaHistoryCollector) send(ctx context.Context, auth *coreauth.Auth, method, url string, headers map[string]string, payload []byte) ([]byte, error) {
+	var reader io.Reader
+	if payload != nil {
+		reader = bytes.NewReader(payload)
+	}
+	req, errRequest := http.NewRequestWithContext(ctx, method, url, reader)
 	if errRequest != nil {
 		return nil, fmt.Errorf("build request: %w", errRequest)
 	}
@@ -607,6 +641,56 @@ func (c *quotaHistoryCollector) fetch(ctx context.Context, auth *coreauth.Auth, 
 		return nil, fmt.Errorf("upstream returned status %d", status)
 	}
 	return body, nil
+}
+
+// fetchAntigravityQuota reads the Gemini pool's windows from the Antigravity quota
+// summary, trying each host in turn until one reports a Gemini bucket, like the
+// management UI.
+func (c *quotaHistoryCollector) fetchAntigravityQuota(ctx context.Context, auth *coreauth.Auth, token string) ([]quotaHistoryWindow, error) {
+	projectID := quotaHistoryAntigravityProjectID(auth)
+	if projectID == "" {
+		return nil, errors.New("antigravity auth missing project_id")
+	}
+	payload, errMarshal := json.Marshal(map[string]string{"project": projectID})
+	if errMarshal != nil {
+		return nil, fmt.Errorf("build request: %w", errMarshal)
+	}
+	headers := map[string]string{
+		"Authorization": "Bearer " + token,
+		"Content-Type":  "application/json",
+		"User-Agent":    misc.AntigravityUserAgent(),
+	}
+	var lastErr error
+	for _, url := range quotaHistoryAntigravityQuotaURLs {
+		body, errFetch := c.send(ctx, auth, http.MethodPost, url, headers, payload)
+		if errFetch != nil {
+			if ctx.Err() != nil {
+				return nil, errFetch
+			}
+			lastErr = errFetch
+			continue
+		}
+		windows, hasGemini := parseAntigravityQuotaHistory(body)
+		if hasGemini && len(windows) > 0 {
+			return windows, nil
+		}
+		lastErr = errors.New("quota summary contained no Gemini quota windows")
+	}
+	return nil, lastErr
+}
+
+// quotaHistoryAntigravityProjectID returns the project the Antigravity executor sends
+// (metadata project_id), then the attribute fallbacks the management UI reads.
+func quotaHistoryAntigravityProjectID(auth *coreauth.Auth) string {
+	if projectID := stringValue(auth.Metadata, "project_id"); projectID != "" {
+		return projectID
+	}
+	for _, key := range []string{"project_id", "gemini_virtual_project"} {
+		if projectID := strings.TrimSpace(authAttribute(auth, key)); projectID != "" {
+			return projectID
+		}
+	}
+	return ""
 }
 
 // recordPollFailure backs the credential off exponentially from the poll
