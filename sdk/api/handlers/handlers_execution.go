@@ -112,6 +112,11 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		lifecycle.completeError(ctx, interceptErr)
 		return nil, nil, interceptErr
 	}
+	providers, errMsg = filterAntigravityACPProviders(providers, normalizedModel, req, opts)
+	if errMsg != nil {
+		lifecycle.completeError(ctx, errMsg)
+		return nil, nil, errMsg
+	}
 	ctx = coreauth.WithFreshRequestContinuitySession(enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata))
 	resp, err := h.AuthManager.Execute(ctx, providers, req, opts)
 	if err != nil {
@@ -182,6 +187,11 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	if interceptErr != nil {
 		lifecycle.completeError(ctx, interceptErr)
 		return nil, nil, interceptErr
+	}
+	providers, errMsg = filterAntigravityACPProviders(providers, normalizedModel, req, opts)
+	if errMsg != nil {
+		lifecycle.completeError(ctx, errMsg)
+		return nil, nil, errMsg
 	}
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
 	resp, err := h.AuthManager.ExecuteCount(ctx, providers, req, opts)

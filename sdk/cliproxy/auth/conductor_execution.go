@@ -4054,6 +4054,11 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
 	if !okExec || executor == nil {
 		return auth, &Error{Code: "executor_not_found", Message: "executor not registered for provider", HTTPStatus: http.StatusBadRequest}
 	}
+	if rejector, okReject := executor.(interface{ RejectVerifyInference(*Auth) error }); okReject {
+		if errReject := rejector.RejectVerifyInference(auth); errReject != nil {
+			return auth, errReject
+		}
+	}
 
 	routeModel, errModel := resolveVerifyInferenceRouteModel(auth, provider, model)
 	if errModel != nil {

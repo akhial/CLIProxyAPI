@@ -129,8 +129,14 @@ func TestAntigravityModelEnumLocalKVRestart(t *testing.T) {
 		t.Fatalf("warm KV startup made %d upstream calls, want 1 total", calls.Load())
 	}
 	loaded.Metadata["disable_cooling"] = true
-	req := cliproxyexecutor.Request{Model: "gemini-3.8-flash-high", Payload: []byte(`{"reasoning_effort":"low","messages":[{"role":"user","content":"hi"}]}`)}
-	if _, errExecute := executor.NewAntigravityExecutor(restarted.cfg).Execute(t.Context(), loaded, req, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI}); errExecute != nil {
+	acpPayload := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingLevel":"low"}}}`)
+	req := cliproxyexecutor.Request{Model: "gemini-3.8-flash-high", Payload: acpPayload}
+	opts := cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatGemini,
+		OriginalRequest: acpPayload,
+		Headers:         http.Header{"X-Acp-Conversation-Id": {"11111111-1111-4111-8111-111111111111"}},
+	}
+	if _, errExecute := executor.NewAntigravityExecutor(restarted.cfg).Execute(t.Context(), loaded, req, opts); errExecute != nil {
 		t.Fatal(errExecute)
 	}
 	got := <-generation

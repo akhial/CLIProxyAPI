@@ -73,7 +73,16 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 	_ = doc.Delete("request.labels")
 	_ = doc.Delete("request.sessionId")
 	_ = doc.Delete("request.stream")
-	sanitizeAntigravityRequestSchemasForModelIfNeededDoc(selection.ID, doc)
+	isACP, acpUA := helps.AntigravityACPCountTokens(doc, opts)
+	acpToolsNormalized, errACPTools := helps.NormalizeAntigravityACPTools(doc, isACP)
+	if errACPTools != nil {
+		return cliproxyexecutor.Response{}, errACPTools
+	}
+	if acpToolsNormalized {
+		sanitizeAntigravityGenerationSchemasDoc(doc)
+	} else {
+		sanitizeAntigravityRequestSchemasForModelIfNeededDoc(selection.ID, doc)
+	}
 
 	base := resolveAntigravityRequestBaseURL(auth)
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
@@ -103,7 +112,11 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 	// No httpReq.Close: keep the shared Antigravity connection pool usable.
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+prepared.token)
-	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
+	userAgent := resolveUserAgent(auth)
+	if acpUA != "" && antigravityConfiguredUserAgent(auth) == "" {
+		userAgent = acpUA
+	}
+	httpReq.Header.Set("User-Agent", userAgent)
 	if host := resolveHost(base); host != "" {
 		httpReq.Host = host
 	}

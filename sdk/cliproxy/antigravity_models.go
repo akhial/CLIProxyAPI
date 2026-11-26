@@ -792,16 +792,17 @@ func (s *Service) antigravityHomeEnabled() bool {
 }
 
 func filterAntigravityModels(models []*ModelInfo, hints antigravityModelCapabilityHints) []*ModelInfo {
-	if hints.ModelIDs == nil {
-		return models
-	}
-
 	filtered := make([]*ModelInfo, 0, len(models))
 	for _, model := range models {
-		if model != nil {
-			if _, ok := hints.ModelIDs[normalizeAntigravityFetchedModelID(model.ID)]; ok {
-				filtered = append(filtered, model)
-			}
+		if model == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(model.ID)), "gemini-") {
+			continue
+		}
+		if hints.ModelIDs == nil {
+			filtered = append(filtered, model)
+			continue
+		}
+		if _, ok := hints.ModelIDs[normalizeAntigravityFetchedModelID(model.ID)]; ok {
+			filtered = append(filtered, model)
 		}
 	}
 	return filtered
