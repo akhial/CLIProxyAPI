@@ -447,12 +447,19 @@ func quotaHistoryEligible(auth *coreauth.Auth) bool {
 	}
 }
 
-func quotaHistoryAntigravityTokenFresh(auth *coreauth.Auth, now time.Time) bool {
-	if auth == nil || !auth.HasValidAccessToken(now.Add(quotaHistoryAntigravityTokenMargin)) {
-		return false
+func quotaHistoryCachedAntigravityToken(auth *coreauth.Auth, now time.Time) (string, bool) {
+	if auth == nil {
+		return "", false
+	}
+	token := strings.TrimSpace(tokenValueFromMetadata(auth.Metadata))
+	if token == "" {
+		return "", false
 	}
 	exp, hasExp := auth.AccessTokenExpirationTime()
-	return hasExp && exp.After(now.Add(quotaHistoryAntigravityTokenMargin))
+	if !hasExp || !exp.After(now.Add(quotaHistoryAntigravityTokenMargin)) {
+		return "", false
+	}
+	return token, true
 }
 
 func quotaHistoryProvider(auth *coreauth.Auth) string {
@@ -488,10 +495,15 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 		return
 	}
 	// Do not wake idle Antigravity credentials just to poll quota: require a
-	// known access-token expiry beyond the refresh skew window so background
-	// ticks never trigger OAuth refreshes and stop once the token expires.
-	if provider == "antigravity" && !pollNow && !quotaHistoryAntigravityTokenFresh(auth, now) {
-		return
+	// cached access token with a known expiry beyond the refresh skew window,
+	// and pass it read-only so background ticks can never trigger OAuth refresh.
+	cachedToken := ""
+	if provider == "antigravity" && !pollNow {
+		token, ok := quotaHistoryCachedAntigravityToken(auth, now)
+		if !ok {
+			return
+		}
+		cachedToken = token
 	}
 	lastSample := state.lastSample
 	if provider == "claude" {
@@ -500,7 +512,7 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 	if !pollNow && !lastSample.IsZero() && now.Sub(lastSample) < c.pollInterval {
 		return
 	}
-	if errPoll := c.poll(ctx, auth, provider, state, now); errPoll != nil {
+	if errPoll := c.poll(ctx, auth, provider, state, now, cachedToken); errPoll != nil {
 		if ctx.Err() != nil {
 			return
 		}
@@ -530,10 +542,14 @@ func (c *quotaHistoryCollector) recordHeaderSample(ctx context.Context, auth *co
 	return true
 }
 
-func (c *quotaHistoryCollector) poll(ctx context.Context, auth *coreauth.Auth, provider string, state *quotaHistoryAuthState, now time.Time) error {
-	token, errToken := c.token(ctx, auth)
-	if errToken != nil {
-		return errToken
+func (c *quotaHistoryCollector) poll(ctx context.Context, auth *coreauth.Auth, provider string, state *quotaHistoryAuthState, now time.Time, cachedToken string) error {
+	token := cachedToken
+	if token == "" {
+		var errToken error
+		token, errToken = c.token(ctx, auth)
+		if errToken != nil {
+			return errToken
+		}
 	}
 	var windows []quotaHistoryWindow
 	switch provider {
