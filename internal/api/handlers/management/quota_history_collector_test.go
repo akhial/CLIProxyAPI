@@ -3,9 +3,12 @@ package management
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -670,5 +673,132 @@ func TestHandlerQuotaHistoryResetCooldownLiftsQuotaCooldown(t *testing.T) {
 	updated, _ := manager.GetByID(auth.ID)
 	if views := coreauth.CooldownSnapshotForAuth(updated, time.Now()); len(views) != 0 {
 		t.Fatalf("cooldowns after an early reset = %+v, want none", views)
+	}
+}
+
+const (
+	testAntigravityPartialBody = `{"groups":[{"displayName":"Claude and GPT models","buckets":[{"bucketId":"claude-weekly","window":"weekly","remainingFraction":0.1}]}]}`
+	testAntigravityGeminiBody  = `{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.42,"resetTime":"2026-11-02T09:00:00Z"},{"bucketId":"gemini-5h","window":"5h","remainingFraction":"0.9","resetTime":"2026-10-27T16:00:00Z"}]}]}`
+)
+
+func testQuotaHistoryAntigravityAuth() *coreauth.Auth {
+	return &coreauth.Auth{
+		ID:       "antigravity-c@x.com.json",
+		Provider: "antigravity",
+		FileName: "antigravity-c@x.com.json",
+		Metadata: map[string]any{
+			"type":          "antigravity",
+			"access_token":  "ag-token",
+			"refresh_token": "ag-refresh",
+			"expired":       "2099-01-01T00:00:00Z",
+			"email":         "c@x.com",
+			"project_id":    "proj-123",
+		},
+	}
+}
+
+func TestQuotaHistoryEligible_Antigravity(t *testing.T) {
+	if !quotaHistoryEligible(testQuotaHistoryAntigravityAuth()) {
+		t.Fatal("antigravity OAuth credential should be eligible")
+	}
+	apiKey := &coreauth.Auth{ID: "ag-key", Provider: "antigravity", Attributes: map[string]string{"api_key": "k"}}
+	if quotaHistoryEligible(apiKey) {
+		t.Fatal("antigravity API-key credential should not be eligible")
+	}
+	disabled := testQuotaHistoryAntigravityAuth()
+	disabled.Disabled = true
+	if quotaHistoryEligible(disabled) {
+		t.Fatal("disabled antigravity credential should not be eligible")
+	}
+}
+
+func TestQuotaHistoryCollector_AntigravityFallsThroughPartialHosts(t *testing.T) {
+	collector, _, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, testQuotaHistoryAntigravityAuth())
+	doer.set(quotaHistoryAntigravityQuotaURLs[0], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityPartialBody})
+	doer.set(quotaHistoryAntigravityQuotaURLs[1], fakeQuotaHistoryResponse{status: http.StatusForbidden, body: `{}`})
+	doer.set(quotaHistoryAntigravityQuotaURLs[2], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})
+	collector.tick(context.Background())
+
+	for _, url := range quotaHistoryAntigravityQuotaURLs {
+		requests := doer.requestsTo(url)
+		if len(requests) != 1 {
+			t.Fatalf("requests to %s = %d, want 1", url, len(requests))
+		}
+		req := requests[0]
+		if req.Method != http.MethodPost || req.Header.Get("Authorization") != "Bearer ag-token" ||
+			req.Header.Get("Content-Type") != "application/json" ||
+			!strings.HasPrefix(req.Header.Get("User-Agent"), "antigravity/") {
+			t.Fatalf("request = %s %v", req.Method, req.Header)
+		}
+		body, errBody := req.GetBody()
+		if errBody != nil {
+			t.Fatal(errBody)
+		}
+		payload, _ := io.ReadAll(body)
+		if string(payload) != `{"project":"proj-123"}` {
+			t.Fatalf("payload = %s", payload)
+		}
+	}
+	samples := readTestQuotaHistorySamples(t, collector)
+	if len(samples) != 1 {
+		t.Fatalf("samples = %+v, want 1", samples)
+	}
+	sample := samples[0]
+	if sample.Provider != "antigravity" || sample.Src != "poll" || sample.Plan != "" || sample.Email != "c@x.com" {
+		t.Fatalf("sample = %+v", sample)
+	}
+	want := []quotaHistoryWindow{
+		{ID: "five_hour", PeriodS: quotaHistoryFiveHourSeconds, Used: 10, ResetAt: time.Date(2026, 10, 27, 16, 0, 0, 0, time.UTC).UnixMilli()},
+		{ID: "seven_day", PeriodS: quotaHistoryWeekSeconds, Used: 58, ResetAt: time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC).UnixMilli()},
+	}
+	if !reflect.DeepEqual(sample.Windows, want) {
+		t.Fatalf("windows = %+v, want %+v", sample.Windows, want)
+	}
+	accounts := buildQuotaHistoryAccounts(samples)
+	if len(accounts) != 1 || accounts[0].Provider != "antigravity" || len(accounts[0].Windows) != 2 {
+		t.Fatalf("accounts = %+v", accounts)
+	}
+}
+
+func TestQuotaHistoryCollector_AntigravityStopsAtFirstGeminiHost(t *testing.T) {
+	collector, _, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, testQuotaHistoryAntigravityAuth())
+	doer.set(quotaHistoryAntigravityQuotaURLs[0], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})
+	collector.tick(context.Background())
+	if got := doer.total(); got != 1 {
+		t.Fatalf("requests = %d, want 1", got)
+	}
+	if samples := readTestQuotaHistorySamples(t, collector); len(samples) != 1 {
+		t.Fatalf("samples = %+v", samples)
+	}
+}
+
+func TestQuotaHistoryCollector_AntigravityFailuresBackOff(t *testing.T) {
+	noProject := testQuotaHistoryAntigravityAuth()
+	delete(noProject.Metadata, "project_id")
+	collector, clock, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, noProject)
+	collector.tick(context.Background())
+	if got := doer.total(); got != 0 {
+		t.Fatalf("requests = %d, want 0 without a project", got)
+	}
+	state := collector.states[noProject.ID]
+	if state.failures != 1 || !state.nextPollAt.Equal(clock.Now().Add(10*time.Minute)) {
+		t.Fatalf("state = %+v", state)
+	}
+
+	// Every host answering without Gemini is a failed poll too.
+	partial := testQuotaHistoryAntigravityAuth()
+	collector, _, doer = newTestQuotaHistoryCollector(t, 10*time.Minute, partial)
+	for _, url := range quotaHistoryAntigravityQuotaURLs {
+		doer.set(url, fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityPartialBody})
+	}
+	collector.tick(context.Background())
+	if got := doer.total(); got != len(quotaHistoryAntigravityQuotaURLs) {
+		t.Fatalf("requests = %d, want one per host", got)
+	}
+	if samples := readTestQuotaHistorySamples(t, collector); len(samples) != 0 {
+		t.Fatalf("samples = %+v, want none", samples)
+	}
+	if got := collector.states[partial.ID].failures; got != 1 {
+		t.Fatalf("failures = %d, want 1", got)
 	}
 }
