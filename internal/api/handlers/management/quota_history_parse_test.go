@@ -405,3 +405,23 @@ func TestParseAntigravityQuotaHistory_EdgeValues(t *testing.T) {
 		})
 	}
 }
+
+func TestParseAntigravitySubscriptionPlan(t *testing.T) {
+	cases := []struct {
+		body string
+		want string
+	}{
+		{`{"currentTier":{"id":"free-tier"},"paidTier":{"id":"g1-ultra-tier","name":"Google AI Ultra"}}`, "ultra"},
+		{`{"current_tier":{"id":"free-tier"},"paid_tier":{"id":"g1-ultra-lite-tier"}}`, "ultra-lite"},
+		{`{"paidTier":{"id":"g1-pro-tier"}}`, "pro"},
+		{`{"currentTier":{"id":"free-tier"}}`, "free"},
+		{`{"currentTier":{"id":"g1-pro-tier"},"paidTier":{"id":"unknown-tier"}}`, "pro"},
+		{`{}`, ""},
+		{`not json`, ""},
+	}
+	for _, tc := range cases {
+		if got := parseAntigravitySubscriptionPlan([]byte(tc.body)); got != tc.want {
+			t.Errorf("parseAntigravitySubscriptionPlan(%s) = %q, want %q", tc.body, got, tc.want)
+		}
+	}
+}

@@ -615,3 +615,38 @@ func antigravityHistoryFraction(value ojson.Result) (float64, bool) {
 	}
 	return quotaHistoryNumber(value)
 }
+
+func antigravityPlanFromTierID(tierID string) string {
+	switch strings.ToLower(strings.TrimSpace(tierID)) {
+	case "free-tier":
+		return "free"
+	case "g1-pro-tier":
+		return "pro"
+	case "g1-ultra-tier":
+		return "ultra"
+	case "g1-ultra-lite-tier":
+		return "ultra-lite"
+	default:
+		return ""
+	}
+}
+
+// parseAntigravitySubscriptionPlan derives the subscription plan from an
+// Antigravity loadCodeAssist response body, preferring paidTier over currentTier.
+func parseAntigravitySubscriptionPlan(body []byte) string {
+	root := quotaHistoryJSONObject(body)
+	if !root.Exists() {
+		return ""
+	}
+	if paidTier := quotaHistoryFirst(root, "paidTier", "paid_tier"); paidTier.IsObject() {
+		if plan := antigravityPlanFromTierID(paidTier.Get("id").String()); plan != "" {
+			return plan
+		}
+	}
+	if currentTier := quotaHistoryFirst(root, "currentTier", "current_tier"); currentTier.IsObject() {
+		if plan := antigravityPlanFromTierID(currentTier.Get("id").String()); plan != "" {
+			return plan
+		}
+	}
+	return ""
+}

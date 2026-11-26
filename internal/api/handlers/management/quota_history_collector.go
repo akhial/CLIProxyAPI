@@ -54,11 +54,12 @@ const (
 	quotaHistorySourcePoll   = "poll"
 	quotaHistorySourceHeader = "header"
 
-	quotaHistoryClaudeUsageURL   = "https://api.anthropic.com/api/oauth/usage"
-	quotaHistoryClaudeProfileURL = "https://api.anthropic.com/api/oauth/profile"
-	quotaHistoryCodexUsageURL    = "https://chatgpt.com/backend-api/wham/usage"
-	quotaHistoryClaudeUserAgent  = "claude-cli/2.1.280 (external, cli)"
-	quotaHistoryCodexUserAgent   = "codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)"
+	quotaHistoryClaudeUsageURL           = "https://api.anthropic.com/api/oauth/usage"
+	quotaHistoryClaudeProfileURL         = "https://api.anthropic.com/api/oauth/profile"
+	quotaHistoryCodexUsageURL            = "https://chatgpt.com/backend-api/wham/usage"
+	quotaHistoryAntigravityCodeAssistURL = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+	quotaHistoryClaudeUserAgent          = "claude-cli/2.1.280 (external, cli)"
+	quotaHistoryCodexUserAgent           = "codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)"
 )
 
 // quotaHistoryAntigravityQuotaURLs are the Antigravity quota summary hosts in the order
@@ -577,6 +578,10 @@ func (c *quotaHistoryCollector) poll(ctx context.Context, auth *coreauth.Auth, p
 		if errFetch != nil {
 			return errFetch
 		}
+		if state.planCheckedAt.IsZero() || now.Sub(state.planCheckedAt) >= quotaHistoryPlanRefresh {
+			state.planCheckedAt = now
+			c.refreshAntigravityPlan(ctx, auth, state, token)
+		}
 	default:
 		return fmt.Errorf("unsupported provider %q", provider)
 	}
@@ -605,6 +610,37 @@ func (c *quotaHistoryCollector) refreshClaudePlan(ctx context.Context, auth *cor
 		return
 	}
 	if plan := parseClaudeProfilePlan(body); plan != "" {
+		state.plan = plan
+	}
+}
+
+// refreshAntigravityPlan resolves an Antigravity account's subscription tier
+// (free/pro/ultra/ultra-lite) from the cached credits hint first, falling back
+// to loadCodeAssist using the already-validated poll token so background ticks
+// never wake idle credentials or trigger an OAuth refresh.
+func (c *quotaHistoryCollector) refreshAntigravityPlan(ctx context.Context, auth *coreauth.Auth, state *quotaHistoryAuthState, token string) {
+	if hint, ok := coreauth.GetAntigravityCreditsHintForAuth(auth); ok && hint.PaidTierID != "" {
+		if plan := antigravityPlanFromTierID(hint.PaidTierID); plan != "" {
+			state.plan = plan
+			return
+		}
+	}
+	if token == "" {
+		return
+	}
+	headers := map[string]string{
+		"Authorization": "Bearer " + token,
+		"Content-Type":  "application/json",
+		"User-Agent":    misc.AntigravityUserAgent(),
+	}
+	body, errFetch := c.send(ctx, auth, http.MethodPost, quotaHistoryAntigravityCodeAssistURL, headers, []byte(`{"metadata":{"ideType":"ANTIGRAVITY"}}`))
+	if errFetch != nil {
+		if ctx.Err() == nil {
+			c.logEntry(auth, "antigravity").WithError(errFetch).Debug("quota history: antigravity plan fetch failed")
+		}
+		return
+	}
+	if plan := parseAntigravitySubscriptionPlan(body); plan != "" {
 		state.plan = plan
 	}
 }
@@ -780,6 +816,8 @@ func (c *quotaHistoryCollector) record(ctx context.Context, auth *coreauth.Auth,
 		if provider == "claude" {
 			state.planCheckedAt = c.nowFunc()
 			c.refreshClaudePlan(ctx, auth, state)
+		} else if provider == "antigravity" {
+			state.planCheckedAt = time.Time{}
 		}
 		if c.resetCooldown != nil {
 			c.resetCooldown(ctx, auth)
@@ -918,12 +956,19 @@ func (c *quotaHistoryCollector) logEntry(auth *coreauth.Auth, provider string) *
 }
 
 func quotaHistoryPlan(auth *coreauth.Auth, provider string, state *quotaHistoryAuthState) string {
-	if state.plan != "" || provider != "codex" {
+	if state.plan != "" {
 		return state.plan
 	}
-	if claims := extractCodexIDTokenClaims(auth); claims != nil {
-		if plan, ok := claims["plan_type"].(string); ok {
-			return strings.ToLower(strings.TrimSpace(plan))
+	switch provider {
+	case "codex":
+		if claims := extractCodexIDTokenClaims(auth); claims != nil {
+			if plan, ok := claims["plan_type"].(string); ok {
+				return strings.ToLower(strings.TrimSpace(plan))
+			}
+		}
+	case "antigravity":
+		if hint, ok := coreauth.GetAntigravityCreditsHintForAuth(auth); ok && hint.PaidTierID != "" {
+			return antigravityPlanFromTierID(hint.PaidTierID)
 		}
 	}
 	return ""

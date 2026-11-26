@@ -764,8 +764,11 @@ func TestQuotaHistoryCollector_AntigravityStopsAtFirstGeminiHost(t *testing.T) {
 	collector, _, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, testQuotaHistoryAntigravityAuth())
 	doer.set(quotaHistoryAntigravityQuotaURLs[0], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})
 	collector.tick(context.Background())
-	if got := doer.total(); got != 1 {
-		t.Fatalf("requests = %d, want 1", got)
+	if got := len(doer.requestsTo(quotaHistoryAntigravityQuotaURLs[0])); got != 1 {
+		t.Fatalf("first host quota requests = %d, want 1", got)
+	}
+	if got := len(doer.requestsTo(quotaHistoryAntigravityQuotaURLs[1])) + len(doer.requestsTo(quotaHistoryAntigravityQuotaURLs[2])); got != 0 {
+		t.Fatalf("fallback host quota requests = %d, want 0", got)
 	}
 	if samples := readTestQuotaHistorySamples(t, collector); len(samples) != 1 {
 		t.Fatalf("samples = %+v", samples)
@@ -854,11 +857,60 @@ func TestQuotaHistoryCollector_AntigravityBackgroundPollUsesCachedTokenReadOnly(
 	if resolveCalls != 0 {
 		t.Fatalf("resolveToken calls = %d, want 0 on background Antigravity quota poll", resolveCalls)
 	}
-	if got := doer.total(); got != 1 {
+	if got := len(doer.requestsTo(quotaHistoryAntigravityQuotaURLs[0])); got != 1 {
 		t.Fatalf("quota requests = %d, want 1", got)
 	}
 	if got := doer.requestsTo(quotaHistoryAntigravityQuotaURLs[0])[0].Header.Get("Authorization"); got != "Bearer ag-token" {
 		t.Fatalf("Authorization = %q, want Bearer ag-token", got)
+	}
+}
+
+func TestQuotaHistoryCollector_AntigravityPlanRefresh(t *testing.T) {
+	auth := testQuotaHistoryAntigravityAuth()
+	collector, clock, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, auth)
+	doer.set(quotaHistoryAntigravityQuotaURLs[0], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})
+	doer.set(quotaHistoryAntigravityCodeAssistURL, fakeQuotaHistoryResponse{
+		status: http.StatusOK,
+		body:   `{"currentTier":{"id":"free-tier"},"paidTier":{"id":"g1-ultra-tier"}}`,
+	})
+
+	collector.tick(context.Background())
+	if got := len(doer.requestsTo(quotaHistoryAntigravityCodeAssistURL)); got != 1 {
+		t.Fatalf("loadCodeAssist requests = %d, want 1", got)
+	}
+	samples := readTestQuotaHistorySamples(t, collector)
+	if len(samples) != 1 || samples[0].Plan != "ultra" {
+		t.Fatalf("samples = %+v, want plan ultra", samples)
+	}
+
+	// Next 10-minute poll keeps the cached plan without re-calling loadCodeAssist.
+	clock.Advance(10 * time.Minute)
+	collector.tick(context.Background())
+	if got := len(doer.requestsTo(quotaHistoryAntigravityCodeAssistURL)); got != 1 {
+		t.Fatalf("loadCodeAssist requests after 10m = %d, want 1", got)
+	}
+
+	// When AntigravityCreditsHint already carries PaidTierID, no loadCodeAssist request is needed.
+	hintAuth := testQuotaHistoryAntigravityAuth()
+	hintAuth.ID = "antigravity-hint@x.com.json"
+	hintAuth.FileName = "antigravity-hint@x.com.json"
+	coreauth.SetAntigravityCreditsHintForAuth(hintAuth, coreauth.AntigravityCreditsHint{
+		Known:      true,
+		PaidTierID: "g1-pro-tier",
+		UpdatedAt:  clock.Now(),
+	})
+	t.Cleanup(func() {
+		coreauth.SetAntigravityCreditsHintForAuth(hintAuth, coreauth.AntigravityCreditsHint{})
+	})
+	collector2, _, doer2 := newTestQuotaHistoryCollector(t, 10*time.Minute, hintAuth)
+	doer2.set(quotaHistoryAntigravityQuotaURLs[0], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})
+	collector2.tick(context.Background())
+	if got := len(doer2.requestsTo(quotaHistoryAntigravityCodeAssistURL)); got != 0 {
+		t.Fatalf("loadCodeAssist requests with credits hint = %d, want 0", got)
+	}
+	samples2 := readTestQuotaHistorySamples(t, collector2)
+	if len(samples2) != 1 || samples2[0].Plan != "pro" {
+		t.Fatalf("samples2 = %+v, want plan pro", samples2)
 	}
 }
 
