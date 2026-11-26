@@ -606,10 +606,18 @@ func TestAntigravityColdStart_RefreshesExpiredTokenUsingAuthProxy(t *testing.T) 
 }
 
 func TestAntigravityColdStart_ExpiredAuthSkipsAutoRefreshAndRegistersFallbackModels(t *testing.T) {
-	var refreshCalls atomic.Int32
+	var idleRefreshCalls atomic.Int32
+	sentinelRefreshed := make(chan struct{}, 1)
 	mockExecutor := &mockAntigravityRefreshExecutor{
-		onRefresh: func(*coreauth.Auth) {
-			refreshCalls.Add(1)
+		onRefresh: func(a *coreauth.Auth) {
+			if a != nil && a.ID == "antigravity-proactive.json" {
+				select {
+				case sentinelRefreshed <- struct{}{}:
+				default:
+				}
+				return
+			}
+			idleRefreshCalls.Add(1)
 		},
 	}
 
@@ -618,14 +626,27 @@ func TestAntigravityColdStart_ExpiredAuthSkipsAutoRefreshAndRegistersFallbackMod
 	configPath := filepath.Join(configDir, "config.yaml")
 	_ = os.WriteFile(configPath, []byte("port: 0\n"), 0o600)
 
-	authJSON := []byte(`{
+	idleAuthJSON := []byte(`{
 		"type": "antigravity",
 		"refresh_token": "ref-token-idle-cold-start",
 		"access_token": "expired-access-token",
 		"expired": "2020-01-01T00:00:00Z"
 	}`)
-	if err := os.WriteFile(filepath.Join(authDir, "antigravity-idle.json"), authJSON, 0o600); err != nil {
-		t.Fatalf("failed to write auth file: %v", err)
+	if err := os.WriteFile(filepath.Join(authDir, "antigravity-idle.json"), idleAuthJSON, 0o600); err != nil {
+		t.Fatalf("failed to write idle auth file: %v", err)
+	}
+	// Sentinel credential that explicitly opts into proactive refresh so we can
+	// synchronize deterministically on the auto-refresh loop's full rebuild pass
+	// without wall-clock sleeps.
+	proactiveAuthJSON := []byte(`{
+		"type": "antigravity",
+		"refresh_token": "ref-token-proactive-sentinel",
+		"access_token": "expired-access-token",
+		"expired": "2020-01-01T00:00:00Z",
+		"refresh_interval_seconds": 1800
+	}`)
+	if err := os.WriteFile(filepath.Join(authDir, "antigravity-proactive.json"), proactiveAuthJSON, 0o600); err != nil {
+		t.Fatalf("failed to write proactive auth file: %v", err)
 	}
 
 	svc, errBuild := NewBuilder().
@@ -648,6 +669,7 @@ func TestAntigravityColdStart_ExpiredAuthSkipsAutoRefreshAndRegistersFallbackMod
 	}
 	t.Cleanup(func() {
 		GlobalModelRegistry().UnregisterClient(loadedAuth.ID)
+		GlobalModelRegistry().UnregisterClient("antigravity-proactive.json")
 	})
 
 	svc.registerModelsForAuth(ctx, loadedAuth)
@@ -672,8 +694,12 @@ func TestAntigravityColdStart_ExpiredAuthSkipsAutoRefreshAndRegistersFallbackMod
 	svc.coreManager.StartAutoRefresh(ctx, 10*time.Millisecond)
 	defer svc.coreManager.StopAutoRefresh()
 
-	time.Sleep(80 * time.Millisecond)
-	if got := refreshCalls.Load(); got != 0 {
+	select {
+	case <-sentinelRefreshed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for auto-refresh loop to evaluate credentials")
+	}
+	if got := idleRefreshCalls.Load(); got != 0 {
 		t.Fatalf("auto-refresh loop invoked Refresh %d time(s) for idle Antigravity auth, want 0", got)
 	}
 }

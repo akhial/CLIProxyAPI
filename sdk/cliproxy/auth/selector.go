@@ -1250,6 +1250,37 @@ func IsAuthAvailableForModel(auth *Auth, model string, now time.Time) bool {
 	return !blocked
 }
 
+// antigravityAllowsExpiredOnDemandRefresh reports whether an Antigravity auth
+// with an expired access token should remain selectable so the executor can
+// refresh it on demand instead of relying on proactive background refresh.
+func antigravityAllowsExpiredOnDemandRefresh(auth *Auth, now time.Time) bool {
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+		return false
+	}
+	if auth.Disabled || auth.Status == StatusDisabled || auth.RequiresSignIn {
+		return false
+	}
+	if hasUnauthorizedAuthFailure(auth) || hasDisabledInvalidGrantFailure(auth) || authHasUnchangedRejectedRefreshToken(auth) {
+		return false
+	}
+	if !auth.NextRefreshAfter.IsZero() && auth.NextRefreshAfter.After(now) {
+		return false
+	}
+	if token := authAccessToken(auth); token != "" && auth.RejectedAccessToken != "" && auth.RejectedAccessToken == token {
+		return false
+	}
+	if authRefreshToken(auth) == "" {
+		return false
+	}
+	if authPreferredInterval(auth) > 0 {
+		return false
+	}
+	if _, hasEvaluator := auth.Runtime.(RefreshEvaluator); hasEvaluator {
+		return false
+	}
+	return ProviderRefreshLead("antigravity", auth.Runtime) == nil
+}
+
 func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {
 	return isAuthBlockedForModelForRequest(nil, auth, model, now)
 }
@@ -1267,8 +1298,10 @@ func isAuthBlockedForModelForRequest(ctx context.Context, auth *Auth, model stri
 	if hasUnauthorizedAuthFailure(auth) {
 		return true, blockReasonOther, time.Time{}
 	}
-	if exp, ok := auth.AccessTokenExpirationTimeForRequest(ctx, clientHeaders...); ok && !exp.IsZero() && !exp.After(now) {
-		return true, blockReasonOther, time.Time{}
+	if !antigravityAllowsExpiredOnDemandRefresh(auth, now) {
+		if exp, ok := auth.AccessTokenExpirationTimeForRequest(ctx, clientHeaders...); ok && !exp.IsZero() && !exp.After(now) {
+			return true, blockReasonOther, time.Time{}
+		}
 	}
 	if authForce := effectiveAuthForceUntil(auth); authForce.After(now) && auth.NextRetryAfter.After(now) {
 		next := authForce
@@ -1487,8 +1520,10 @@ func isAuthBlockedByQuotaOrAuthForModelForRequest(ctx context.Context, auth *Aut
 	if hasUnauthorizedAuthFailure(auth) {
 		return true
 	}
-	if exp, ok := auth.AccessTokenExpirationTimeForRequest(ctx, clientHeaders...); ok && !exp.IsZero() && !exp.After(now) {
-		return true
+	if !antigravityAllowsExpiredOnDemandRefresh(auth, now) {
+		if exp, ok := auth.AccessTokenExpirationTimeForRequest(ctx, clientHeaders...); ok && !exp.IsZero() && !exp.After(now) {
+			return true
+		}
 	}
 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && (auth.Quota.NextRecoverAt.IsZero() || auth.Quota.NextRecoverAt.After(now)) {
 		return true

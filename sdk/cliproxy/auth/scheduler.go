@@ -1027,8 +1027,10 @@ func isCredentialBlocked(auth *Auth, supportedModelCount int, now time.Time) boo
 	if hasUnauthorizedAuthFailure(auth) {
 		return true
 	}
-	if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && !exp.After(now) {
-		return true
+	if !antigravityAllowsExpiredOnDemandRefresh(auth, now) {
+		if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && !exp.After(now) {
+			return true
+		}
 	}
 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
 		return true
@@ -1400,6 +1402,9 @@ func (m *modelScheduler) demoteExpiredTokensLocked(now time.Time) bool {
 	changed := false
 	for _, entry := range m.entries {
 		if entry == nil || entry.auth == nil || entry.state != scheduledStateReady {
+			continue
+		}
+		if antigravityAllowsExpiredOnDemandRefresh(entry.auth, now) {
 			continue
 		}
 		if exp, ok := entry.auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && !exp.After(now) {
