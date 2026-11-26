@@ -63,7 +63,7 @@ func antigravityNeedsAccessTokenRefresh(auth *cliproxyauth.Auth) bool {
 		return false
 	}
 	accessToken := metaStringValue(auth.Metadata, "access_token")
-	if accessToken == "" {
+	if accessToken == "" || (auth.RejectedAccessToken != "" && auth.RejectedAccessToken == accessToken) {
 		return true
 	}
 	expiry, _ := auth.ExpirationTime()

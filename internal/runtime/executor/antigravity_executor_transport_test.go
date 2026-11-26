@@ -171,11 +171,29 @@ func TestAntigravityPoolLimitsGuardsDefaultAndGFECutoff(t *testing.T) {
 		t.Fatalf("IdleConnTimeout = %v, want %v", defaulted.IdleConnTimeout, antigravityDefaultIdleConnTimeout)
 	}
 
-	// When cfg is nil (or default enabled: false), short mode is applied: MaxIdleConnsPerHost = -1
-	defaultDisabled := &http.Transport{}
-	applyAntigravityPoolLimits(defaultDisabled)
-	if defaultDisabled.MaxIdleConnsPerHost != -1 {
-		t.Fatalf("MaxIdleConnsPerHost = %d, want -1 when pooling is disabled by default", defaultDisabled.MaxIdleConnsPerHost)
+	// When cfg is nil, pooling is enabled by default with 2 idle conns and 30s timeout.
+	defaultEnabled := &http.Transport{}
+	applyAntigravityPoolLimits(defaultEnabled)
+	if defaultEnabled.MaxIdleConnsPerHost != antigravityDefaultMaxIdleConnsPerHost {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want %d when pooling is enabled by default", defaultEnabled.MaxIdleConnsPerHost, antigravityDefaultMaxIdleConnsPerHost)
+	}
+	if defaultEnabled.IdleConnTimeout != antigravityDefaultIdleConnTimeout {
+		t.Fatalf("IdleConnTimeout = %v, want %v when pooling is enabled by default", defaultEnabled.IdleConnTimeout, antigravityDefaultIdleConnTimeout)
+	}
+
+	// Explicit enabled: false applies short mode: MaxIdleConnsPerHost = -1.
+	enabledFalse := false
+	shortCfg := &config.Config{
+		Antigravity: config.AntigravityConfig{
+			ConnectionPool: config.AntigravityConnectionPoolConfig{
+				Enabled: &enabledFalse,
+			},
+		},
+	}
+	explicitDisabled := &http.Transport{}
+	applyAntigravityPoolLimits(explicitDisabled, shortCfg)
+	if explicitDisabled.MaxIdleConnsPerHost != -1 {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want -1 when pooling is explicitly disabled", explicitDisabled.MaxIdleConnsPerHost)
 	}
 
 	applyAntigravityPoolLimits(nil) // must not panic
@@ -756,7 +774,7 @@ func TestAntigravityProxiedRequestsReuseOneConnection(t *testing.T) {
 
 // TestAntigravityPoolConfigIdleTimeoutCustomAndCap verifies that custom idle-conn-timeout
 // is honored (e.g. 10s, 30s) and hard-capped at 210s when configured higher (e.g. 10m),
-// and that connection pool is disabled by default (enabled: false).
+// and that connection pool is enabled by default (enabled: true).
 func TestAntigravityPoolConfigIdleTimeoutCustomAndCap(t *testing.T) {
 	enabledTrue := true
 	enabledFalse := false
@@ -771,9 +789,10 @@ func TestAntigravityPoolConfigIdleTimeoutCustomAndCap(t *testing.T) {
 		wantMaxIdle int
 	}{
 		{
-			name:      "default config disables pooling (enabled: false by default)",
-			cfg:       &config.Config{},
-			wantShort: true,
+			name:        "default config enables pooling (enabled: true by default)",
+			cfg:         &config.Config{},
+			wantTimeout: 30 * time.Second,
+			wantMaxIdle: antigravityDefaultMaxIdleConnsPerHost,
 		},
 		{
 			name: "explicit enabled false activates short mode",
@@ -940,7 +959,14 @@ func TestAntigravityShortModeNeverAdvertisesConnectionCloseAndDisconnects(t *tes
 	}))
 	defer srv.Close()
 
-	cfg := &config.Config{}
+	enabledFalse := false
+	cfg := &config.Config{
+		Antigravity: config.AntigravityConfig{
+			ConnectionPool: config.AntigravityConnectionPoolConfig{
+				Enabled: &enabledFalse,
+			},
+		},
+	}
 	auth := antigravityAuthWithProxy(srv.URL)
 
 	const requests = 4
@@ -1080,19 +1106,19 @@ func TestAntigravityCountTokens429EvictsIdleTransports(t *testing.T) {
 func TestAntigravityTransportKeySeparatesPoolSettingsAcrossReload(t *testing.T) {
 	auth := antigravityAuthWithIDAndProxy("auth-key-separation", "")
 
-	// 1. Client with short connection mode (default enabled: false)
-	cfgShort := &config.Config{}
-	clientShort := newAntigravityHTTPClient(context.Background(), cfgShort, auth, 0)
-
-	// 2. Client with pooled mode (enabled: true)
-	enabledPool := true
-	cfgPooled := &config.Config{
+	// 1. Client with short connection mode (explicit enabled: false)
+	enabledFalse := false
+	cfgShort := &config.Config{
 		Antigravity: config.AntigravityConfig{
 			ConnectionPool: config.AntigravityConnectionPoolConfig{
-				Enabled: &enabledPool,
+				Enabled: &enabledFalse,
 			},
 		},
 	}
+	clientShort := newAntigravityHTTPClient(context.Background(), cfgShort, auth, 0)
+
+	// 2. Client with default pooled mode (enabled: true by default)
+	cfgPooled := &config.Config{}
 	clientPooled := newAntigravityHTTPClient(context.Background(), cfgPooled, auth, 0)
 
 	// Transports must NOT be shared because their pool settings keys differ!

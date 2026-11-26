@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -535,13 +536,15 @@ func TestAntigravityColdStart_RefreshesExpiredTokenUsingAuthProxy(t *testing.T) 
 	configPath := filepath.Join(configDir, "config.yaml")
 	_ = os.WriteFile(configPath, []byte("port: 0\n"), 0o600)
 
-	// Write an expired Antigravity auth file with a specific proxy_url
+	// Write an expired Antigravity auth file with a specific proxy_url and an explicit
+	// refresh_interval_seconds (Antigravity defaults to on-demand refresh with nil RefreshLead).
 	authJSON := []byte(`{
 		"type": "antigravity",
 		"proxy_url": "http://127.0.0.1:9876",
 		"refresh_token": "ref-token-cold-start",
 		"access_token": "expired-access-token",
-		"expired": "2020-01-01T00:00:00Z"
+		"expired": "2020-01-01T00:00:00Z",
+		"refresh_interval_seconds": 1800
 	}`)
 	err := os.WriteFile(filepath.Join(authDir, "antigravity.json"), authJSON, 0o600)
 	if err != nil {
@@ -602,8 +605,92 @@ func TestAntigravityColdStart_RefreshesExpiredTokenUsingAuthProxy(t *testing.T) 
 	}
 }
 
+func TestAntigravityColdStart_ExpiredAuthSkipsAutoRefreshAndRegistersFallbackModels(t *testing.T) {
+	var refreshCalls atomic.Int32
+	var execCalls atomic.Int32
+	mockExecutor := &mockAntigravityRefreshExecutor{
+		onRefresh: func(*coreauth.Auth) {
+			refreshCalls.Add(1)
+		},
+		onExecute: func(*coreauth.Auth) {
+			execCalls.Add(1)
+		},
+	}
+
+	authDir := t.TempDir()
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "config.yaml")
+	_ = os.WriteFile(configPath, []byte("port: 0\n"), 0o600)
+
+	idleAuthJSON := []byte(`{
+		"type": "antigravity",
+		"refresh_token": "ref-token-idle-cold-start",
+		"access_token": "expired-access-token",
+		"expired": "2020-01-01T00:00:00Z"
+	}`)
+	if err := os.WriteFile(filepath.Join(authDir, "antigravity-idle.json"), idleAuthJSON, 0o600); err != nil {
+		t.Fatalf("failed to write idle auth file: %v", err)
+	}
+
+	svc, errBuild := NewBuilder().
+		WithConfig(&config.Config{AuthDir: authDir}).
+		WithConfigPath(configPath).
+		Build()
+	if errBuild != nil {
+		t.Fatalf("Build error: %v", errBuild)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if errLoad := svc.coreManager.Load(ctx); errLoad != nil {
+		t.Fatalf("Load error: %v", errLoad)
+	}
+	loadedAuth, exists := svc.coreManager.GetByID("antigravity-idle.json")
+	if !exists || loadedAuth == nil {
+		t.Fatal("expected antigravity-idle.json to be loaded")
+	}
+	t.Cleanup(func() {
+		GlobalModelRegistry().UnregisterClient(loadedAuth.ID)
+	})
+
+	if lead := coreauth.ProviderRefreshLead(loadedAuth.Provider, loadedAuth.Runtime); lead != nil {
+		t.Fatalf("ProviderRefreshLead(%q) = %v, want nil (on-demand refresh only)", loadedAuth.Provider, *lead)
+	}
+
+	svc.registerModelsForAuth(ctx, loadedAuth)
+	models := GlobalModelRegistry().GetModelsForClient(loadedAuth.ID)
+	if len(models) == 0 {
+		t.Fatal("expected cold-start expired Antigravity credential with refresh_token to register fallback Gemini models")
+	}
+	hasNeon := false
+	for _, m := range models {
+		if m != nil && m.ID == "gemini-4-neon-xhigh" {
+			hasNeon = true
+		}
+		if m != nil && !strings.HasPrefix(strings.ToLower(m.ID), "gemini-") {
+			t.Fatalf("unexpected non-Gemini fallback model %q", m.ID)
+		}
+	}
+	if !hasNeon {
+		t.Fatalf("expected gemini-4-neon-xhigh in cold-start fallback models, got %d models", len(models))
+	}
+
+	svc.coreManager.RegisterExecutor(mockExecutor)
+	if _, errExec := svc.coreManager.Execute(ctx, []string{"antigravity"}, cliproxyexecutor.Request{Model: "gemini-4-neon-xhigh"}, cliproxyexecutor.Options{}); errExec != nil {
+		t.Fatalf("Execute() on cold-start expired Antigravity auth failed: %v", errExec)
+	}
+	if got := execCalls.Load(); got != 1 {
+		t.Fatalf("Execute calls = %d, want 1", got)
+	}
+	if got := refreshCalls.Load(); got != 0 {
+		t.Fatalf("unexpected proactive Refresh calls = %d, want 0", got)
+	}
+}
+
 type mockAntigravityRefreshExecutor struct {
 	onRefresh func(*coreauth.Auth)
+	onExecute func(*coreauth.Auth)
 }
 
 func (e *mockAntigravityRefreshExecutor) Identifier() string { return "antigravity" }
@@ -620,7 +707,10 @@ func (e *mockAntigravityRefreshExecutor) Refresh(ctx context.Context, auth *core
 	return auth, nil
 }
 
-func (e *mockAntigravityRefreshExecutor) Execute(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *mockAntigravityRefreshExecutor) Execute(_ context.Context, auth *coreauth.Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	if e.onExecute != nil {
+		e.onExecute(auth)
+	}
 	return cliproxyexecutor.Response{}, nil
 }
 

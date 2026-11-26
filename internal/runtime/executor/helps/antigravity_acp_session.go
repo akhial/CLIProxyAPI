@@ -294,7 +294,7 @@ func resolveACPUserAgent(doc *ojson.Doc, opts executor.Options, caller string) s
 	} else if cached, hasCached := defaultACPSessionCorrelator.lookupWorkerPlatform(caller); hasCached {
 		platform = cached
 	} else {
-		platform = acpPlatform{osType: runtime.GOOS, arch: runtime.GOARCH}
+		platform = acpPlatform{osType: runtime.GOOS, arch: misc.AntigravityDefaultArchForOS(runtime.GOOS)}
 	}
 
 	hostPath := ""
@@ -624,11 +624,7 @@ func agyPlatformFromDoc(doc *ojson.Doc) (acpPlatform, bool) {
 		case "mac", "macos", "darwin":
 			return acpPlatform{osType: "darwin", arch: "arm64"}, true
 		case "linux":
-			arch := "amd64"
-			if runtime.GOOS == "linux" {
-				arch = runtime.GOARCH
-			}
-			return acpPlatform{osType: "linux", arch: arch}, true
+			return acpPlatform{osType: "linux", arch: "amd64"}, true
 		case "windows", "win":
 			return acpPlatform{osType: "windows", arch: "amd64"}, true
 		}

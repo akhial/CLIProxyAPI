@@ -292,7 +292,7 @@ type AntigravityConfig struct {
 // AntigravityConnectionPoolConfig controls upstream HTTP/1.1 connection pooling behavior for Antigravity.
 type AntigravityConnectionPoolConfig struct {
 	// Enabled controls whether upstream connection pooling is enabled.
-	// Defaults to false (short-lived connection mode). Set to true to enable connection pooling.
+	// Defaults to true. Set to false to disable connection pooling (short-lived connection mode).
 	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 
 	// IdleConnTimeout specifies how long an idle connection stays in the pool before expiring.

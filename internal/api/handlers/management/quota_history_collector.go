@@ -3,6 +3,7 @@ package management
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -38,6 +39,10 @@ const (
 	quotaHistoryPlanRefresh      = 24 * time.Hour
 	quotaHistoryPruneInterval    = 24 * time.Hour
 	quotaHistoryMaxBackoff       = 3 * time.Hour
+	// quotaHistoryAntigravityTokenMargin stays strictly above api_tools.go's 30s
+	// refresh skew so idle quota ticks never trigger an OAuth refresh just before
+	// token expiry.
+	quotaHistoryAntigravityTokenMargin = time.Minute
 	// quotaHistoryStateLookback bounds the history read on startup to restore
 	// per-credential schedules.
 	quotaHistoryStateLookback    = 48 * time.Hour
@@ -291,11 +296,16 @@ func (h *Handler) quotaHistorySnapshot() *Handler {
 }
 
 // quotaHistoryDo sends a request through the same transport and timeout as the
-// management APICall handler.
+// management APICall handler. Antigravity requests use HTTP/1.1 without TLS ALPN
+// to match native Antigravity clients.
 func (h *Handler) quotaHistoryDo(auth *coreauth.Auth, req *http.Request) (int, []byte, error) {
+	transport := h.quotaHistorySnapshot().apiCallTransport(auth, "")
+	if quotaHistoryProvider(auth) == "antigravity" {
+		transport = antigravityQuotaHistoryTransport(transport)
+	}
 	client := &http.Client{
 		Timeout:   defaultAPICallTimeout,
-		Transport: h.quotaHistorySnapshot().apiCallTransport(auth, ""),
+		Transport: transport,
 	}
 	defer client.CloseIdleConnections()
 	resp, errDo := client.Do(req)
@@ -312,6 +322,23 @@ func (h *Handler) quotaHistoryDo(auth *coreauth.Auth, req *http.Request) (int, [
 		return resp.StatusCode, nil, errRead
 	}
 	return resp.StatusCode, body, nil
+}
+
+func antigravityQuotaHistoryTransport(base http.RoundTripper) http.RoundTripper {
+	tr, ok := base.(*http.Transport)
+	if !ok || tr == nil {
+		return base
+	}
+	clone := tr.Clone()
+	clone.ForceAttemptHTTP2 = false
+	clone.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
+	if clone.TLSClientConfig == nil {
+		clone.TLSClientConfig = &tls.Config{}
+	} else {
+		clone.TLSClientConfig = clone.TLSClientConfig.Clone()
+	}
+	clone.TLSClientConfig.NextProtos = nil
+	return clone
 }
 
 func (c *quotaHistoryCollector) run(ctx context.Context) {
@@ -420,6 +447,21 @@ func quotaHistoryEligible(auth *coreauth.Auth) bool {
 	}
 }
 
+func quotaHistoryCachedAntigravityToken(auth *coreauth.Auth, now time.Time) (string, bool) {
+	if auth == nil {
+		return "", false
+	}
+	token := strings.TrimSpace(tokenValueFromMetadata(auth.Metadata))
+	if token == "" {
+		return "", false
+	}
+	exp, hasExp := auth.AccessTokenExpirationTime()
+	if !hasExp || !exp.After(now.Add(quotaHistoryAntigravityTokenMargin)) {
+		return "", false
+	}
+	return token, true
+}
+
 func quotaHistoryProvider(auth *coreauth.Auth) string {
 	return strings.ToLower(strings.TrimSpace(auth.Provider))
 }
@@ -452,6 +494,17 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 	if c.pollInterval <= 0 || now.Before(state.nextPollAt) {
 		return
 	}
+	// Do not wake idle Antigravity credentials just to poll quota: require a
+	// cached access token with a known expiry beyond the refresh skew window,
+	// and pass it read-only so background ticks can never trigger OAuth refresh.
+	cachedToken := ""
+	if provider == "antigravity" && !pollNow {
+		token, ok := quotaHistoryCachedAntigravityToken(auth, now)
+		if !ok {
+			return
+		}
+		cachedToken = token
+	}
 	lastSample := state.lastSample
 	if provider == "claude" {
 		lastSample = state.lastPoll
@@ -459,7 +512,7 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 	if !pollNow && !lastSample.IsZero() && now.Sub(lastSample) < c.pollInterval {
 		return
 	}
-	if errPoll := c.poll(ctx, auth, provider, state, now); errPoll != nil {
+	if errPoll := c.poll(ctx, auth, provider, state, now, cachedToken); errPoll != nil {
 		if ctx.Err() != nil {
 			return
 		}
@@ -489,10 +542,14 @@ func (c *quotaHistoryCollector) recordHeaderSample(ctx context.Context, auth *co
 	return true
 }
 
-func (c *quotaHistoryCollector) poll(ctx context.Context, auth *coreauth.Auth, provider string, state *quotaHistoryAuthState, now time.Time) error {
-	token, errToken := c.token(ctx, auth)
-	if errToken != nil {
-		return errToken
+func (c *quotaHistoryCollector) poll(ctx context.Context, auth *coreauth.Auth, provider string, state *quotaHistoryAuthState, now time.Time, cachedToken string) error {
+	token := cachedToken
+	if token == "" {
+		var errToken error
+		token, errToken = c.token(ctx, auth)
+		if errToken != nil {
+			return errToken
+		}
 	}
 	var windows []quotaHistoryWindow
 	switch provider {

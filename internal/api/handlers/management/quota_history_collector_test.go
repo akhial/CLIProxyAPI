@@ -802,3 +802,79 @@ func TestQuotaHistoryCollector_AntigravityFailuresBackOff(t *testing.T) {
 		t.Fatalf("failures = %d, want 1", got)
 	}
 }
+
+func TestQuotaHistoryCollector_AntigravitySkipsExpiredIdleAuth(t *testing.T) {
+	expired := testQuotaHistoryAntigravityAuth()
+	expired.Metadata["expired"] = "2020-01-01T00:00:00Z"
+
+	nearExpiry := testQuotaHistoryAntigravityAuth()
+	nearExpiry.ID = "antigravity-near-expiry.json"
+	nearExpiry.FileName = "antigravity-near-expiry.json"
+
+	noExpiry := testQuotaHistoryAntigravityAuth()
+	noExpiry.ID = "antigravity-no-expiry.json"
+	noExpiry.FileName = "antigravity-no-expiry.json"
+	delete(noExpiry.Metadata, "expired")
+
+	collector, clock, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, expired, nearExpiry, noExpiry)
+	nearExpiry.Metadata["expired"] = clock.Now().Add(20 * time.Second).Format(time.RFC3339)
+
+	resolveCalls := 0
+	collector.resolveToken = func(_ context.Context, _ *coreauth.Auth) (string, error) {
+		resolveCalls++
+		return "should-not-refresh", nil
+	}
+
+	collector.tick(context.Background())
+	if resolveCalls != 0 {
+		t.Fatalf("resolveToken calls = %d, want 0 for idle expired/near-expiry/missing-expiry Antigravity auths", resolveCalls)
+	}
+	if got := doer.total(); got != 0 {
+		t.Fatalf("quota requests = %d, want 0 for idle expired/near-expiry/missing-expiry Antigravity auths", got)
+	}
+}
+
+func TestQuotaHistoryCollector_AntigravityBackgroundPollUsesCachedTokenReadOnly(t *testing.T) {
+	// Even with expires_at (instead of expired), background polling must read
+	// the cached access_token directly without invoking resolveToken/OAuth refresh.
+	auth := testQuotaHistoryAntigravityAuth()
+	delete(auth.Metadata, "expired")
+	auth.Metadata["expires_at"] = "2099-01-01T00:00:00Z"
+
+	collector, _, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, auth)
+	doer.set(quotaHistoryAntigravityQuotaURLs[0], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})
+
+	resolveCalls := 0
+	collector.resolveToken = func(_ context.Context, _ *coreauth.Auth) (string, error) {
+		resolveCalls++
+		return "should-not-be-called", nil
+	}
+
+	collector.tick(context.Background())
+	if resolveCalls != 0 {
+		t.Fatalf("resolveToken calls = %d, want 0 on background Antigravity quota poll", resolveCalls)
+	}
+	if got := doer.total(); got != 1 {
+		t.Fatalf("quota requests = %d, want 1", got)
+	}
+	if got := doer.requestsTo(quotaHistoryAntigravityQuotaURLs[0])[0].Header.Get("Authorization"); got != "Bearer ag-token" {
+		t.Fatalf("Authorization = %q, want Bearer ag-token", got)
+	}
+}
+
+func TestAntigravityQuotaHistoryTransportDisablesHTTP2AndALPN(t *testing.T) {
+	base := &http.Transport{ForceAttemptHTTP2: true}
+	wrapped, ok := antigravityQuotaHistoryTransport(base).(*http.Transport)
+	if !ok || wrapped == nil {
+		t.Fatalf("expected *http.Transport, got %T", wrapped)
+	}
+	if wrapped.ForceAttemptHTTP2 {
+		t.Fatal("ForceAttemptHTTP2 = true, want false")
+	}
+	if wrapped.TLSNextProto == nil || len(wrapped.TLSNextProto) != 0 {
+		t.Fatalf("TLSNextProto = %#v, want empty non-nil map", wrapped.TLSNextProto)
+	}
+	if wrapped.TLSClientConfig == nil || wrapped.TLSClientConfig.NextProtos != nil {
+		t.Fatalf("TLSClientConfig.NextProtos = %#v, want nil", wrapped.TLSClientConfig)
+	}
+}
