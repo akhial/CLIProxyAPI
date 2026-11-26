@@ -142,6 +142,62 @@ func (s *quotaHistoryStore) readFile(path string, fromMs, toMs int64) ([]quotaHi
 	}
 }
 
+// HasSample reports whether authID has at least one stored sample with from <= t <= to.
+func (s *quotaHistoryStore) HasSample(authID string, from, to time.Time) (bool, error) {
+	if s == nil || authID == "" {
+		return false, nil
+	}
+	fromMs, toMs := from.UnixMilli(), to.UnixMilli()
+	if fromMs > toMs {
+		return false, nil
+	}
+	first := quotaHistoryUTCDay(from)
+	last := quotaHistoryUTCDay(to)
+	for day := last; !day.Before(first); day = day.AddDate(0, 0, -1) {
+		found, errHas := s.fileHasSample(s.dayPath(day), authID, fromMs, toMs)
+		if errHas != nil {
+			return false, errHas
+		}
+		if found {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *quotaHistoryStore) fileHasSample(path, authID string, fromMs, toMs int64) (bool, error) {
+	file, errOpen := os.Open(path)
+	if errOpen != nil {
+		if errors.Is(errOpen, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("quota history: open %s: %w", filepath.Base(path), errOpen)
+	}
+	defer func() {
+		if errClose := file.Close(); errClose != nil {
+			log.Errorf("quota history: close %s: %v", filepath.Base(path), errClose)
+		}
+	}()
+
+	reader := bufio.NewReader(file)
+	for {
+		line, errLine := reader.ReadBytes('\n')
+		if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
+			var sample quotaHistorySample
+			if errDecode := json.Unmarshal(trimmed, &sample); errDecode == nil &&
+				sample.AuthID == authID && sample.T >= fromMs && sample.T <= toMs {
+				return true, nil
+			}
+		}
+		if errLine != nil {
+			if errors.Is(errLine, io.EOF) {
+				return false, nil
+			}
+			return false, fmt.Errorf("quota history: read %s: %w", filepath.Base(path), errLine)
+		}
+	}
+}
+
 // Prune deletes daily files whose samples are all older than the retention period.
 func (s *quotaHistoryStore) Prune(now time.Time) error {
 	s.mu.Lock()

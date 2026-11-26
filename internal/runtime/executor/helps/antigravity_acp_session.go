@@ -119,7 +119,7 @@ func (c *acpSessionCorrelator) lookupWorkerPlatform(caller string) (acpPlatform,
 	return p, ok
 }
 
-func (c *acpSessionCorrelator) nextCall(identity string) (stamp int64, seq uint64) {
+func (c *acpSessionCorrelator) nextCall(identity string, minSeq uint64) (stamp int64, seq uint64) {
 	nowMs := c.now().UnixMilli()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -132,10 +132,11 @@ func (c *acpSessionCorrelator) nextCall(identity string) (stamp int64, seq uint6
 		}
 		c.callSeqOrder = append(c.callSeqOrder, identity)
 	}
-	c.callSeq[identity]++
+	seq = max(c.callSeq[identity]+1, minSeq)
+	c.callSeq[identity] = seq
 	stamp = max(nowMs, c.lastMillis[identity]+1)
 	c.lastMillis[identity] = stamp
-	return stamp, c.callSeq[identity]
+	return stamp, seq
 }
 
 func (c *acpSessionCorrelator) sessionForTitle(scope, promptText string) string {
@@ -500,8 +501,18 @@ func ApplyAntigravityACPRequestDoc(doc *ojson.Doc, opts executor.Options, accoun
 		setIfEmpty("request.labels.model_enum", effectiveEnum)
 	}
 
-	stamp, seq := defaultACPSessionCorrelator.nextCall(identity)
 	if strings.TrimSpace(doc.Get("requestId").String()) == "" {
+		effectiveStep := lastStep
+		if rawStep := strings.TrimSpace(doc.Get("request.labels.last_step_index").String()); rawStep != "" {
+			if parsedStep, errStep := strconv.Atoi(rawStep); errStep == nil && parsedStep >= 0 {
+				effectiveStep = parsedStep
+			}
+		}
+		var minSeq uint64 = 1
+		if effectiveStep >= 0 {
+			minSeq = uint64(effectiveStep) + 1
+		}
+		stamp, seq := defaultACPSessionCorrelator.nextCall(identity, minSeq)
 		_ = doc.Set("requestId", fmt.Sprintf("agent/%s/%d/%s/%d", cascadeID, stamp, trajectoryID, seq))
 	}
 
