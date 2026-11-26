@@ -294,7 +294,7 @@ func resolveACPUserAgent(doc *ojson.Doc, opts executor.Options, caller string) s
 	} else if cached, hasCached := defaultACPSessionCorrelator.lookupWorkerPlatform(caller); hasCached {
 		platform = cached
 	} else {
-		platform = acpPlatform{osType: runtime.GOOS, arch: "amd64"}
+		platform = acpPlatform{osType: runtime.GOOS, arch: misc.AntigravityDefaultArchForOS(runtime.GOOS)}
 	}
 
 	hostPath := ""

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -601,6 +602,79 @@ func TestAntigravityColdStart_RefreshesExpiredTokenUsingAuthProxy(t *testing.T) 
 	}
 	if gotProxy, _ := refreshReceivedProxy.Load().(string); gotProxy != "http://127.0.0.1:9876" {
 		t.Fatalf("expected executor to receive proxy http://127.0.0.1:9876, got %q", gotProxy)
+	}
+}
+
+func TestAntigravityColdStart_ExpiredAuthSkipsAutoRefreshAndRegistersFallbackModels(t *testing.T) {
+	var refreshCalls atomic.Int32
+	mockExecutor := &mockAntigravityRefreshExecutor{
+		onRefresh: func(*coreauth.Auth) {
+			refreshCalls.Add(1)
+		},
+	}
+
+	authDir := t.TempDir()
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "config.yaml")
+	_ = os.WriteFile(configPath, []byte("port: 0\n"), 0o600)
+
+	authJSON := []byte(`{
+		"type": "antigravity",
+		"refresh_token": "ref-token-idle-cold-start",
+		"access_token": "expired-access-token",
+		"expired": "2020-01-01T00:00:00Z"
+	}`)
+	if err := os.WriteFile(filepath.Join(authDir, "antigravity-idle.json"), authJSON, 0o600); err != nil {
+		t.Fatalf("failed to write auth file: %v", err)
+	}
+
+	svc, errBuild := NewBuilder().
+		WithConfig(&config.Config{AuthDir: authDir}).
+		WithConfigPath(configPath).
+		Build()
+	if errBuild != nil {
+		t.Fatalf("Build error: %v", errBuild)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if errLoad := svc.coreManager.Load(ctx); errLoad != nil {
+		t.Fatalf("Load error: %v", errLoad)
+	}
+	loadedAuth, exists := svc.coreManager.GetByID("antigravity-idle.json")
+	if !exists || loadedAuth == nil {
+		t.Fatal("expected antigravity-idle.json to be loaded")
+	}
+	t.Cleanup(func() {
+		GlobalModelRegistry().UnregisterClient(loadedAuth.ID)
+	})
+
+	svc.registerModelsForAuth(ctx, loadedAuth)
+	models := GlobalModelRegistry().GetModelsForClient(loadedAuth.ID)
+	if len(models) == 0 {
+		t.Fatal("expected cold-start expired Antigravity credential with refresh_token to register fallback Gemini models")
+	}
+	hasNeon := false
+	for _, m := range models {
+		if m != nil && m.ID == "gemini-4-neon-xhigh" {
+			hasNeon = true
+		}
+		if m != nil && !strings.HasPrefix(strings.ToLower(m.ID), "gemini-") {
+			t.Fatalf("unexpected non-Gemini fallback model %q", m.ID)
+		}
+	}
+	if !hasNeon {
+		t.Fatalf("expected gemini-4-neon-xhigh in cold-start fallback models, got %d models", len(models))
+	}
+
+	svc.coreManager.RegisterExecutor(mockExecutor)
+	svc.coreManager.StartAutoRefresh(ctx, 10*time.Millisecond)
+	defer svc.coreManager.StopAutoRefresh()
+
+	time.Sleep(80 * time.Millisecond)
+	if got := refreshCalls.Load(); got != 0 {
+		t.Fatalf("auto-refresh loop invoked Refresh %d time(s) for idle Antigravity auth, want 0", got)
 	}
 }
 

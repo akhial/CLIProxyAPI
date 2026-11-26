@@ -14,6 +14,16 @@ const (
 	AntigravityDefaultHostPath = "t3-code/0.0.0"
 )
 
+// AntigravityDefaultArchForOS returns the default CPU architecture reported for
+// an Antigravity CLI User-Agent when the client architecture is unknown: arm64
+// on macOS (darwin) and amd64 on Linux/Windows/other platforms.
+func AntigravityDefaultArchForOS(osType string) string {
+	if strings.EqualFold(strings.TrimSpace(osType), "darwin") {
+		return "arm64"
+	}
+	return "amd64"
+}
+
 // AntigravityCLIUserAgent formats the official Antigravity CLI/ACP User-Agent string.
 func AntigravityCLIUserAgent(osType, arch, hostPath string) string {
 	osType = strings.TrimSpace(osType)
@@ -22,7 +32,7 @@ func AntigravityCLIUserAgent(osType, arch, hostPath string) string {
 	}
 	arch = strings.TrimSpace(arch)
 	if arch == "" {
-		arch = "amd64"
+		arch = AntigravityDefaultArchForOS(osType)
 	}
 	hostPath = strings.TrimSpace(hostPath)
 	if hostPath == "" {

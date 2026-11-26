@@ -3,6 +3,7 @@ package management
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -38,6 +39,10 @@ const (
 	quotaHistoryPlanRefresh      = 24 * time.Hour
 	quotaHistoryPruneInterval    = 24 * time.Hour
 	quotaHistoryMaxBackoff       = 3 * time.Hour
+	// quotaHistoryAntigravityTokenMargin stays strictly above api_tools.go's 30s
+	// refresh skew so idle quota ticks never trigger an OAuth refresh just before
+	// token expiry.
+	quotaHistoryAntigravityTokenMargin = time.Minute
 	// quotaHistoryStateLookback bounds the history read on startup to restore
 	// per-credential schedules.
 	quotaHistoryStateLookback    = 48 * time.Hour
@@ -291,11 +296,16 @@ func (h *Handler) quotaHistorySnapshot() *Handler {
 }
 
 // quotaHistoryDo sends a request through the same transport and timeout as the
-// management APICall handler.
+// management APICall handler. Antigravity requests use HTTP/1.1 without TLS ALPN
+// to match native Antigravity clients.
 func (h *Handler) quotaHistoryDo(auth *coreauth.Auth, req *http.Request) (int, []byte, error) {
+	transport := h.quotaHistorySnapshot().apiCallTransport(auth, "")
+	if quotaHistoryProvider(auth) == "antigravity" {
+		transport = antigravityQuotaHistoryTransport(transport)
+	}
 	client := &http.Client{
 		Timeout:   defaultAPICallTimeout,
-		Transport: h.quotaHistorySnapshot().apiCallTransport(auth, ""),
+		Transport: transport,
 	}
 	defer client.CloseIdleConnections()
 	resp, errDo := client.Do(req)
@@ -312,6 +322,23 @@ func (h *Handler) quotaHistoryDo(auth *coreauth.Auth, req *http.Request) (int, [
 		return resp.StatusCode, nil, errRead
 	}
 	return resp.StatusCode, body, nil
+}
+
+func antigravityQuotaHistoryTransport(base http.RoundTripper) http.RoundTripper {
+	tr, ok := base.(*http.Transport)
+	if !ok || tr == nil {
+		return base
+	}
+	clone := tr.Clone()
+	clone.ForceAttemptHTTP2 = false
+	clone.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
+	if clone.TLSClientConfig == nil {
+		clone.TLSClientConfig = &tls.Config{}
+	} else {
+		clone.TLSClientConfig = clone.TLSClientConfig.Clone()
+	}
+	clone.TLSClientConfig.NextProtos = nil
+	return clone
 }
 
 func (c *quotaHistoryCollector) run(ctx context.Context) {
@@ -450,6 +477,12 @@ func (c *quotaHistoryCollector) collect(ctx context.Context, auth *coreauth.Auth
 		return
 	}
 	if c.pollInterval <= 0 || now.Before(state.nextPollAt) {
+		return
+	}
+	// Do not wake idle Antigravity credentials just to poll quota: once the
+	// access token is expired or within its refresh skew window, wait until real
+	// traffic refreshes it on demand.
+	if provider == "antigravity" && !pollNow && !auth.HasValidAccessToken(now.Add(quotaHistoryAntigravityTokenMargin)) {
 		return
 	}
 	lastSample := state.lastSample

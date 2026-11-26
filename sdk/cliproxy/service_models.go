@@ -139,6 +139,13 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 				s.asyncProbeAntigravityCapabilities(ctx, a, provider)
 				return true
 			}
+			// With on-demand token refresh (nil RefreshLead), a cold-start expired
+			// credential without persisted hints skips background probing. Register
+			// the static Gemini Antigravity fallback catalog so incoming ACP requests
+			// can route to the executor, refresh on demand, and trigger live discovery.
+			if !a.HasValidAccessToken(antigravityNowFunc()) && antigravityAuthCanRefreshOnDemand(a) {
+				models = filterAntigravityModels(registry.GetAntigravityModels(), hints)
+			}
 		} else {
 			models = registry.GetAntigravityModels()
 		}

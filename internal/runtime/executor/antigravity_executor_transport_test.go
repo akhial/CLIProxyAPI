@@ -774,7 +774,7 @@ func TestAntigravityProxiedRequestsReuseOneConnection(t *testing.T) {
 
 // TestAntigravityPoolConfigIdleTimeoutCustomAndCap verifies that custom idle-conn-timeout
 // is honored (e.g. 10s, 30s) and hard-capped at 210s when configured higher (e.g. 10m),
-// and that connection pool is disabled by default (enabled: false).
+// and that connection pool is enabled by default (enabled: true).
 func TestAntigravityPoolConfigIdleTimeoutCustomAndCap(t *testing.T) {
 	enabledTrue := true
 	enabledFalse := false

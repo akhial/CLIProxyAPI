@@ -802,3 +802,46 @@ func TestQuotaHistoryCollector_AntigravityFailuresBackOff(t *testing.T) {
 		t.Fatalf("failures = %d, want 1", got)
 	}
 }
+
+func TestQuotaHistoryCollector_AntigravitySkipsExpiredIdleAuth(t *testing.T) {
+	expired := testQuotaHistoryAntigravityAuth()
+	expired.Metadata["expired"] = "2020-01-01T00:00:00Z"
+
+	nearExpiry := testQuotaHistoryAntigravityAuth()
+	nearExpiry.ID = "antigravity-near-expiry.json"
+	nearExpiry.FileName = "antigravity-near-expiry.json"
+
+	collector, clock, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, expired, nearExpiry)
+	nearExpiry.Metadata["expired"] = clock.Now().Add(20 * time.Second).Format(time.RFC3339)
+
+	resolveCalls := 0
+	collector.resolveToken = func(_ context.Context, _ *coreauth.Auth) (string, error) {
+		resolveCalls++
+		return "should-not-refresh", nil
+	}
+
+	collector.tick(context.Background())
+	if resolveCalls != 0 {
+		t.Fatalf("resolveToken calls = %d, want 0 for idle expired/near-expiry Antigravity auths", resolveCalls)
+	}
+	if got := doer.total(); got != 0 {
+		t.Fatalf("quota requests = %d, want 0 for idle expired/near-expiry Antigravity auths", got)
+	}
+}
+
+func TestAntigravityQuotaHistoryTransportDisablesHTTP2AndALPN(t *testing.T) {
+	base := &http.Transport{ForceAttemptHTTP2: true}
+	wrapped, ok := antigravityQuotaHistoryTransport(base).(*http.Transport)
+	if !ok || wrapped == nil {
+		t.Fatalf("expected *http.Transport, got %T", wrapped)
+	}
+	if wrapped.ForceAttemptHTTP2 {
+		t.Fatal("ForceAttemptHTTP2 = true, want false")
+	}
+	if wrapped.TLSNextProto == nil || len(wrapped.TLSNextProto) != 0 {
+		t.Fatalf("TLSNextProto = %#v, want empty non-nil map", wrapped.TLSNextProto)
+	}
+	if wrapped.TLSClientConfig == nil || wrapped.TLSClientConfig.NextProtos != nil {
+		t.Fatalf("TLSClientConfig.NextProtos = %#v, want nil", wrapped.TLSClientConfig)
+	}
+}

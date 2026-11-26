@@ -115,6 +115,13 @@ func isAntigravityAuthDisabled(auth *coreauth.Auth) bool {
 	return auth != nil && (auth.Disabled || auth.Status == coreauth.StatusDisabled)
 }
 
+func antigravityAuthCanRefreshOnDemand(auth *coreauth.Auth) bool {
+	if auth == nil || isAntigravityAuthDisabled(auth) || coreauth.HasUnauthorizedAuthFailure(auth) || isAntigravityRefreshTerminallyRejected(auth) {
+		return false
+	}
+	return antigravityProbeRefreshGrant(auth) != ""
+}
+
 func isAntigravityRefreshTerminallyRejected(auth *coreauth.Auth) bool {
 	if auth == nil {
 		return false

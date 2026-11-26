@@ -1334,7 +1334,7 @@ oauth:
       # tos-pause-window: "0"         # optional: pool-wide protective pause after the first 403 TOS_VIOLATION
                                     # (default "0" = disabled; set a positive duration such as "6h" to enable pool-wide pause)
       # Use credits as a last resort after free-tier Claude quota is exhausted.
-      # Disabled by default to avoid periodic loadCodeAssist credits probes when only Gemini ACP is used.
+      # Disabled by default to avoid on-request loadCodeAssist credits checks when only Gemini ACP is used.
       antigravity-credits: false
 
       # Signature cache validation for thinking blocks (Antigravity/Claude).
