@@ -101,9 +101,20 @@ func TestAntigravityExpiredAuth_SelectionAndSchedulerAllowOnDemandRefresh(t *tes
 			wantBlocked: true,
 		},
 		{
-			name: "rejected access token stays blocked",
+			name: "rejected access token after backoff elapses stays selectable for on-demand refresh",
 			auth: newExpired(func(a *Auth) {
+				a.Metadata["expired"] = now.Add(time.Hour).Format(time.RFC3339)
 				a.RejectedAccessToken = "expired-access"
+				a.NextRefreshAfter = now.Add(-time.Second)
+			}),
+			wantBlocked: false,
+		},
+		{
+			name: "rejected access token during refresh backoff stays blocked",
+			auth: newExpired(func(a *Auth) {
+				a.Metadata["expired"] = now.Add(time.Hour).Format(time.RFC3339)
+				a.RejectedAccessToken = "expired-access"
+				a.NextRefreshAfter = now.Add(5 * time.Minute)
 			}),
 			wantBlocked: true,
 		},
@@ -160,6 +171,33 @@ func TestAntigravityExpiredAuth_SelectionAndSchedulerAllowOnDemandRefresh(t *tes
 	}
 	if sched.entries[expired.ID].state != scheduledStateReady {
 		t.Fatalf("scheduled state = %v, want ready", sched.entries[expired.ID].state)
+	}
+
+	// When an on-demand Antigravity auth is blocked solely by NextRefreshAfter backoff,
+	// selection must surface NextRefreshAfter so promoteExpiredLocked unblocks it once elapsed.
+	backoffAuth := newExpired(func(a *Auth) {
+		a.Metadata["expired"] = now.Add(time.Hour).Format(time.RFC3339)
+		a.RejectedAccessToken = "expired-access"
+		a.NextRefreshAfter = now.Add(5 * time.Minute)
+	})
+	blocked, _, nextRetry := isAuthBlockedForModel(backoffAuth, "gemini-4-neon", now)
+	if !blocked || !nextRetry.Equal(backoffAuth.NextRefreshAfter) {
+		t.Fatalf("isAuthBlockedForModel(backoff) = (%v, %v), want (true, %v)", blocked, nextRetry, backoffAuth.NextRefreshAfter)
+	}
+	backoffEntry := &scheduledAuth{
+		meta:        buildScheduledAuthMetaWithModelSet(backoffAuth, nil, 0),
+		auth:        backoffAuth,
+		state:       scheduledStateBlocked,
+		nextRetryAt: nextRetry,
+	}
+	backoffSched := &modelScheduler{
+		modelKey: "gemini-4-neon",
+		entries:  map[string]*scheduledAuth{backoffAuth.ID: backoffEntry},
+		blocked:  cooldownQueue{backoffEntry},
+	}
+	backoffSched.promoteExpiredLocked(backoffAuth.NextRefreshAfter)
+	if backoffEntry.state != scheduledStateReady {
+		t.Fatalf("after NextRefreshAfter elapsed: scheduled state = %v, want ready", backoffEntry.state)
 	}
 
 	// Auto-refresh scheduling must remain disabled for idle expired Antigravity auth.

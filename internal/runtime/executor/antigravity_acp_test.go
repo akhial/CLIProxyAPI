@@ -942,6 +942,74 @@ func TestAntigravityACPOnDemandTokenRefresh(t *testing.T) {
 	}
 }
 
+func TestAntigravityACPRejectedUnexpiredTokenRefreshesBeforeInference(t *testing.T) {
+	var mu sync.Mutex
+	var tokenCalls int
+	var gotAuthHeader string
+	rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case "https://oauth2.googleapis.com/token":
+			mu.Lock()
+			tokenCalls++
+			mu.Unlock()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": {"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"access_token":"recovered-acp-token","expires_in":3600,"token_type":"Bearer"}`)),
+			}, nil
+		default:
+			mu.Lock()
+			gotAuthHeader = req.Header.Get("Authorization")
+			mu.Unlock()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": {"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader("data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"OK\"}]},\"finishReason\":\"STOP\"}]}}\n\n")),
+			}, nil
+		}
+	})
+
+	exec := NewAntigravityExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:                  "auth-acp-rejected-recovery",
+		Provider:            "antigravity",
+		Attributes:          map[string]string{"base_url": "https://daily-cloudcode-pa.googleapis.com"},
+		RejectedAccessToken: "rejected-but-unexpired-token",
+		Metadata: map[string]any{
+			"access_token":  "rejected-but-unexpired-token",
+			"refresh_token": "refresh-acp-token",
+			"project_id":    "proj-acp-refresh",
+			"email":         "acp-refresh@example.com",
+			"expired":       time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+
+	body := sampleACPMainPayload("linux", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "Recover after 401")
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(rt))
+	stream, errExec := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   "gemini-4-neon",
+		Payload: body,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		SourceFormat:    sdktranslator.FormatGemini,
+		OriginalRequest: body,
+		Metadata:        map[string]any{cliproxyexecutor.CallerScopeMetadataKey: session.CallerScope("worker-rejected-recovery")},
+	})
+	if errExec != nil {
+		t.Fatalf("ExecuteStream error: %v", errExec)
+	}
+	drainStream(t, stream)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if tokenCalls != 1 {
+		t.Fatalf("OAuth token refresh calls = %d, want 1", tokenCalls)
+	}
+	if gotAuthHeader != "Bearer recovered-acp-token" {
+		t.Fatalf("upstream Authorization = %q, want Bearer recovered-acp-token", gotAuthHeader)
+	}
+}
+
 func TestAntigravityACPDefaultConnectionPoolingReusesConnection(t *testing.T) {
 	var mu sync.Mutex
 	remotes := map[string]int{}

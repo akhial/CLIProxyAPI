@@ -1251,8 +1251,9 @@ func IsAuthAvailableForModel(auth *Auth, model string, now time.Time) bool {
 }
 
 // antigravityAllowsExpiredOnDemandRefresh reports whether an Antigravity auth
-// with an expired access token should remain selectable so the executor can
-// refresh it on demand instead of relying on proactive background refresh.
+// with an expired or previously 401-rejected access token should remain
+// selectable so the executor can refresh it on demand instead of relying on
+// proactive background refresh.
 func antigravityAllowsExpiredOnDemandRefresh(auth *Auth, now time.Time) bool {
 	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
 		return false
@@ -1264,9 +1265,6 @@ func antigravityAllowsExpiredOnDemandRefresh(auth *Auth, now time.Time) bool {
 		return false
 	}
 	if !auth.NextRefreshAfter.IsZero() && auth.NextRefreshAfter.After(now) {
-		return false
-	}
-	if token := authAccessToken(auth); token != "" && auth.RejectedAccessToken != "" && auth.RejectedAccessToken == token {
 		return false
 	}
 	if authRefreshToken(auth) == "" {
@@ -1300,6 +1298,9 @@ func isAuthBlockedForModelForRequest(ctx context.Context, auth *Auth, model stri
 	}
 	if !antigravityAllowsExpiredOnDemandRefresh(auth, now) {
 		if exp, ok := auth.AccessTokenExpirationTimeForRequest(ctx, clientHeaders...); ok && !exp.IsZero() && !exp.After(now) {
+			if !auth.NextRefreshAfter.IsZero() && auth.NextRefreshAfter.After(now) && antigravityAllowsExpiredOnDemandRefresh(auth, auth.NextRefreshAfter) {
+				return true, blockReasonOther, auth.NextRefreshAfter
+			}
 			return true, blockReasonOther, time.Time{}
 		}
 	}
