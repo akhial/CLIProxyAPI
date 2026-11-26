@@ -535,13 +535,15 @@ func TestAntigravityColdStart_RefreshesExpiredTokenUsingAuthProxy(t *testing.T) 
 	configPath := filepath.Join(configDir, "config.yaml")
 	_ = os.WriteFile(configPath, []byte("port: 0\n"), 0o600)
 
-	// Write an expired Antigravity auth file with a specific proxy_url
+	// Write an expired Antigravity auth file with a specific proxy_url and an explicit
+	// refresh_interval_seconds (Antigravity defaults to on-demand refresh with nil RefreshLead).
 	authJSON := []byte(`{
 		"type": "antigravity",
 		"proxy_url": "http://127.0.0.1:9876",
 		"refresh_token": "ref-token-cold-start",
 		"access_token": "expired-access-token",
-		"expired": "2020-01-01T00:00:00Z"
+		"expired": "2020-01-01T00:00:00Z",
+		"refresh_interval_seconds": 1800
 	}`)
 	err := os.WriteFile(filepath.Join(authDir, "antigravity.json"), authJSON, 0o600)
 	if err != nil {

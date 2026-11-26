@@ -22,7 +22,7 @@ func AntigravityCLIUserAgent(osType, arch, hostPath string) string {
 	}
 	arch = strings.TrimSpace(arch)
 	if arch == "" {
-		arch = runtime.GOARCH
+		arch = "amd64"
 	}
 	hostPath = strings.TrimSpace(hostPath)
 	if hostPath == "" {

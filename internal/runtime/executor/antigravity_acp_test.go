@@ -843,3 +843,34 @@ func TestAntigravityACPMultiTurnToolUse(t *testing.T) {
 		t.Fatalf("turn 2 functionResponse.response.output = %q, want 'no running tasks' (raw=%s)", got, t2.Get("request.contents.2").Raw)
 	}
 }
+
+func TestAntigravityACPLinuxDefaultsToAMD64(t *testing.T) {
+	var mu sync.Mutex
+	var captured []capturedUpstreamRequest
+	srv := newFakeAntigravityStreamServer(t, &captured, &mu)
+	defer srv.Close()
+
+	exec := NewAntigravityExecutor(&config.Config{})
+	auth := testAntigravityACPAuth(srv.URL)
+	convID := "99999999-9999-4999-8999-999999999999"
+	body := sampleACPMainPayload("linux", convID, "Hello from Linux")
+
+	stream, errExec := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gemini-4-neon",
+		Payload: body,
+	}, cliproxyexecutor.Options{
+		Stream:          true,
+		SourceFormat:    sdktranslator.FormatGemini,
+		OriginalRequest: body,
+		Metadata:        map[string]any{cliproxyexecutor.CallerScopeMetadataKey: session.CallerScope("worker-linux-amd64")},
+	})
+	if errExec != nil {
+		t.Fatalf("ExecuteStream error: %v", errExec)
+	}
+	drainStream(t, stream)
+
+	wantUA := misc.AntigravityCLIUserAgent("linux", "amd64", misc.AntigravityDefaultHostPath)
+	if got := captured[0].Headers.Get("User-Agent"); got != wantUA {
+		t.Fatalf("Linux User-Agent = %q, want %q", got, wantUA)
+	}
+}

@@ -1328,13 +1328,14 @@ oauth:
       #   - pattern: '(?s)<system[-_](conventions|directive)>.*?</system[-_](conventions|directive)>\n?'
       #     replacement: ""
       # connection-pool:              # optional: upstream HTTP connection pool settings
-      #   enabled: false             # whether to enable connection pooling (default: false)
+      #   enabled: true              # whether to enable connection pooling (default: true)
       #   idle-conn-timeout: "30s"    # idle keep-alive timeout (default: 30s, capped at 210s)
       #   max-idle-conns-per-host: 2  # max idle connections per host per credential (default: 2; <= 0 disables idle pooling)
       # tos-pause-window: "0"         # optional: pool-wide protective pause after the first 403 TOS_VIOLATION
                                     # (default "0" = disabled; set a positive duration such as "6h" to enable pool-wide pause)
       # Use credits as a last resort after free-tier Claude quota is exhausted.
-      antigravity-credits: true
+      # Disabled by default to avoid periodic loadCodeAssist credits probes when only Gemini ACP is used.
+      antigravity-credits: false
 
       # Signature cache validation for thinking blocks (Antigravity/Claude).
       # When true (default), cached signatures are preferred and validated.

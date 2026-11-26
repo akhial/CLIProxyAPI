@@ -14,7 +14,7 @@ func TestAntigravityCLIUserAgent(t *testing.T) {
 	}
 
 	def := AntigravityCLIUserAgent("", "", "")
-	if !strings.Contains(def, "os_type="+runtime.GOOS+"; arch="+runtime.GOARCH) {
+	if !strings.Contains(def, "os_type="+runtime.GOOS+"; arch=amd64") {
 		t.Fatalf("default platform missing in %q", def)
 	}
 	if !strings.Contains(def, "host_path="+AntigravityDefaultHostPath+")") {

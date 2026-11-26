@@ -180,26 +180,24 @@ type antigravityPoolSettings struct {
 }
 
 func resolveAntigravityPoolSettings(cfg *config.Config) antigravityPoolSettings {
-	// By default, upstream connection pooling is disabled (shortMode = true, maxIdleConnsPerHost = -1)
-	// to prevent socket buildup and stale connection errors across rotating credentials.
+	// By default, upstream connection pooling is enabled (matching native
+	// Antigravity's HTTP/1.1 keep-alive reuse). Set enabled: false (or a
+	// non-positive timeout / max-idle-conns-per-host) to use short-lived mode.
 	settings := antigravityPoolSettings{
-		shortMode:           true,
-		maxIdleConnsPerHost: -1,
-		idleConnTimeout:     0,
+		shortMode:           false,
+		maxIdleConnsPerHost: antigravityDefaultMaxIdleConnsPerHost,
+		idleConnTimeout:     antigravityDefaultIdleConnTimeout,
 	}
 	if cfg == nil {
 		return settings
 	}
 
-	// Pooling is active ONLY when explicitly enabled: true
-	if cfg.Antigravity.ConnectionPool.Enabled == nil || !*cfg.Antigravity.ConnectionPool.Enabled {
+	if cfg.Antigravity.ConnectionPool.Enabled != nil && !*cfg.Antigravity.ConnectionPool.Enabled {
+		settings.shortMode = true
+		settings.maxIdleConnsPerHost = -1
+		settings.idleConnTimeout = 0
 		return settings
 	}
-
-	// Enabled is true: initialize default pool settings
-	settings.shortMode = false
-	settings.idleConnTimeout = antigravityDefaultIdleConnTimeout
-	settings.maxIdleConnsPerHost = antigravityDefaultMaxIdleConnsPerHost
 
 	rawTimeout := strings.TrimSpace(cfg.Antigravity.ConnectionPool.IdleConnTimeout)
 	if rawTimeout != "" {
