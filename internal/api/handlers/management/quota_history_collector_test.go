@@ -712,39 +712,32 @@ func TestQuotaHistoryEligible_Antigravity(t *testing.T) {
 	}
 }
 
-func TestQuotaHistoryCollector_AntigravityFallsThroughPartialHosts(t *testing.T) {
-	for _, url := range quotaHistoryAntigravityQuotaURLs {
-		if strings.Contains(url, ".sandbox.") {
-			t.Fatalf("unexpected sandbox quota host in quotaHistoryAntigravityQuotaURLs: %q", url)
-		}
-	}
-	if len(quotaHistoryAntigravityQuotaURLs) != 2 {
-		t.Fatalf("len(quotaHistoryAntigravityQuotaURLs) = %d, want 2", len(quotaHistoryAntigravityQuotaURLs))
+func TestQuotaHistoryCollector_AntigravityUsesOnlyDailyHost(t *testing.T) {
+	if len(quotaHistoryAntigravityQuotaURLs) != 1 ||
+		quotaHistoryAntigravityQuotaURLs[0] != "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary" {
+		t.Fatalf("quotaHistoryAntigravityQuotaURLs = %v, want only daily-cloudcode-pa", quotaHistoryAntigravityQuotaURLs)
 	}
 	collector, _, doer := newTestQuotaHistoryCollector(t, 10*time.Minute, testQuotaHistoryAntigravityAuth())
-	doer.set(quotaHistoryAntigravityQuotaURLs[0], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityPartialBody})
-	doer.set(quotaHistoryAntigravityQuotaURLs[1], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})
+	doer.set(quotaHistoryAntigravityQuotaURLs[0], fakeQuotaHistoryResponse{status: http.StatusOK, body: testAntigravityGeminiBody})
 	collector.tick(context.Background())
 
-	for _, url := range quotaHistoryAntigravityQuotaURLs {
-		requests := doer.requestsTo(url)
-		if len(requests) != 1 {
-			t.Fatalf("requests to %s = %d, want 1", url, len(requests))
-		}
-		req := requests[0]
-		if req.Method != http.MethodPost || req.Header.Get("Authorization") != "Bearer ag-token" ||
-			req.Header.Get("Content-Type") != "application/json" ||
-			!strings.HasPrefix(req.Header.Get("User-Agent"), "antigravity/") {
-			t.Fatalf("request = %s %v", req.Method, req.Header)
-		}
-		body, errBody := req.GetBody()
-		if errBody != nil {
-			t.Fatal(errBody)
-		}
-		payload, _ := io.ReadAll(body)
-		if string(payload) != `{"project":"proj-123"}` {
-			t.Fatalf("payload = %s", payload)
-		}
+	requests := doer.requestsTo(quotaHistoryAntigravityQuotaURLs[0])
+	if len(requests) != 1 {
+		t.Fatalf("requests to %s = %d, want 1", quotaHistoryAntigravityQuotaURLs[0], len(requests))
+	}
+	req := requests[0]
+	if req.Method != http.MethodPost || req.Header.Get("Authorization") != "Bearer ag-token" ||
+		req.Header.Get("Content-Type") != "application/json" ||
+		!strings.HasPrefix(req.Header.Get("User-Agent"), "antigravity/") {
+		t.Fatalf("request = %s %v", req.Method, req.Header)
+	}
+	body, errBody := req.GetBody()
+	if errBody != nil {
+		t.Fatal(errBody)
+	}
+	payload, _ := io.ReadAll(body)
+	if string(payload) != `{"project":"proj-123"}` {
+		t.Fatalf("payload = %s", payload)
 	}
 	samples := readTestQuotaHistorySamples(t, collector)
 	if len(samples) != 1 {
