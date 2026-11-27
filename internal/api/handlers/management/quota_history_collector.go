@@ -62,11 +62,13 @@ const (
 	quotaHistoryCodexUserAgent   = "codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)"
 )
 
-// quotaHistoryAntigravityQuotaURLs are the Antigravity quota summary hosts in the order
-// the management UI tries them. The daily host can answer without the Gemini pool.
+// quotaHistoryAntigravityQuotaURLs holds the Antigravity Hub quota summary host.
+// Only daily-cloudcode-pa serves the active Antigravity Gemini pool; cloudcode-pa
+// tracks a separate legacy pool that reports remainingFraction=1 (0% used) with a
+// rolling now+7d reset, so falling back to it on a transient daily-host failure
+// records a bogus 100%-available reset spike.
 var quotaHistoryAntigravityQuotaURLs = []string{
 	"https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-	"https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
 }
 
 // quotaHistoryDoFunc performs one upstream request for a credential and
